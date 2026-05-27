@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}设置 — PaperReadAgent{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto space-y-4">
+    <h1 class="text-xl font-bold">&#9881; 设置</h1>
+
+    <!-- Change Password -->
+    <div class="bg-white rounded-xl shadow-sm border p-5">
+        <h2 class="font-semibold text-sm mb-3">修改密码</h2>
+        <form method="post" action="/settings/change-password" class="space-y-3">
+            <input type="password" name="old_password" placeholder="当前密码"
+                   class="w-full border rounded-lg px-3 py-2 text-sm">
+            <input type="password" name="new_password" placeholder="新密码（至少6位）"
+                   class="w-full border rounded-lg px-3 py-2 text-sm">
+            <input type="password" name="new_password_confirm" placeholder="再次输入新密码"
+                   class="w-full border rounded-lg px-3 py-2 text-sm">
+            <button type="submit" class="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 text-sm font-medium">
+                更新密码
+            </button>
+        </form>
+        {% if pwd_error %}<p class="text-red-500 text-xs mt-2">{{ pwd_error }}</p>{% endif %}
+        {% if pwd_ok %}<p class="text-green-500 text-xs mt-2">{{ pwd_ok }}</p>{% endif %}
+    </div>
+
+    <!-- Connection Status -->
+    <div class="bg-white rounded-xl shadow-sm border p-5">
+        <h2 class="font-semibold text-sm mb-3">连接状态</h2>
+        <div class="text-sm space-y-1">
+            <p>服务地址: <code class="bg-gray-100 px-1 rounded">{{ server_host }}:{{ server_port }}</code></p>
+            <p>数据库: <span class="text-green-600">已连接</span></p>
+            <p>用户: <span class="text-gray-500">admin（唯一账号）</span></p>
+        </div>
+    </div>
+
+    <!-- Logout -->
+    <a href="/logout" class="block text-center text-red-500 text-sm py-2 hover:text-red-700">退出登录</a>
+</div>
+{% endblock %}

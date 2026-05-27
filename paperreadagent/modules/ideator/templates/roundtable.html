@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>圆桌讨论 — Ideator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/ideator/static/ideator.css">
+</head>
+<body class="bg-gray-50 h-screen flex flex-col">
+    <nav class="bg-white shadow-sm border-b border-gray-200 shrink-0">
+        <div class="px-4 py-2 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <a href="/ideator/" class="text-gray-400 hover:text-indigo-600 text-sm">&larr; 返回火花</a>
+                <span class="text-lg font-bold text-purple-700" id="rt-page-title">{{ '直接圆桌' if spark_id == 0 else '#' + spark_id|string + ' 圆桌讨论' }}</span>
+            </div>
+            <div class="flex items-center gap-4">
+                <span id="rt-round-num" class="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded">轮次 0</span>
+                <div class="w-48">
+                    <div class="rt-watermark-bar h-2 bg-gray-200 rounded-full overflow-hidden flex">
+                        <div id="rt-hot-bar" class="h-full bg-red-400 transition-all duration-500" style="width:0%"></div>
+                        <div id="rt-warm-bar" class="h-full bg-yellow-400 transition-all duration-500" style="width:0%"></div>
+                    </div>
+                    <div class="flex justify-between text-xs text-gray-400 mt-0.5">
+                        <span id="rt-hot-label">hot 0%</span>
+                        <span id="rt-warm-label">warm 0%</span>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="toggleSidePanel()" class="text-xs border px-2 py-1 rounded hover:bg-gray-100">记忆</button>
+                    <button onclick="manualGraduate(window._rtId)" class="text-xs bg-yellow-100 text-yellow-700 px-2 py-1 rounded hover:bg-yellow-200">毕业</button>
+                    <button onclick="closeCurrentRoundtable()" class="text-xs bg-red-100 text-red-600 px-2 py-1 rounded hover:bg-red-200">结束讨论</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="flex flex-1 overflow-hidden">
+        <div id="rt-seats-panel" class="w-44 border-r bg-gray-50 p-2 overflow-y-auto flex flex-col gap-1 shrink-0"></div>
+        <div id="rt-messages" class="flex-1 overflow-y-auto p-4 space-y-2">
+            <div class="text-center text-gray-400 py-8">等待首轮回应...</div>
+        </div>
+        <div id="rt-side-panel" class="w-56 border-l bg-gray-50 p-2 overflow-y-auto text-xs hidden shrink-0">
+            <div class="font-semibold mb-2">团队记忆</div>
+            <div id="rt-memory-content" class="text-gray-500">加载中...</div>
+        </div>
+    </div>
+
+    <div class="rt-footer p-3 border-t shrink-0 bg-white">
+        <div class="flex gap-2 flex-wrap text-xs mb-2" id="rt-mention-checkboxes">
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" value="all" class="rt-mention-cb" checked> 全部</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" value="gen" class="rt-mention-cb"> 生成者</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" value="rev1" class="rt-mention-cb"> 审查α</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" value="rev2" class="rt-mention-cb"> 审查β</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" value="rev3" class="rt-mention-cb"> 审查γ</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" value="arb1" class="rt-mention-cb"> 仲裁α</label>
+            <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" value="arb2" class="rt-mention-cb"> 仲裁β</label>
+        </div>
+        <div class="flex gap-2">
+            <input id="rt-question-input" type="text" placeholder="输入你的问题，Enter 发送..." class="flex-1 border rounded px-3 py-2 text-sm" onkeydown="if(event.key==='Enter')askRoundtable(window._rtId)">
+            <button id="rt-send-btn" onclick="askRoundtable(window._rtId)" class="bg-indigo-600 text-white px-4 py-2 rounded text-sm hover:bg-indigo-700">提问</button>
+        </div>
+    </div>
+
+    <script src="/ideator/static/ideator.js?v=2"></script>
+    <script>
+        const rtId = {{ rt_id }};
+        window._rtSparkId = {{ spark_id }};
+        if (rtId) {
+            window._rtId = rtId;
+            window._rtLastMsgCount = 0;
+            window._rtPollInterval = setInterval(() => pollRoundtableState(rtId), 5000);
+            pollRoundtableState(rtId);
+        }
+
+        function closeCurrentRoundtable() {
+            fetch(`/ideator/api/roundtables/${window._rtId}/close`, {method:'POST'}).catch(()=>{});
+            window.location.href = '/ideator/';
+        }
+    </script>
+</body>
+</html>

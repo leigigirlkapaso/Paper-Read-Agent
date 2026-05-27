@@ -1,0 +1,61 @@
+"""
+modules/ideator/effort.py
+Effort 参数表。管道始终使用 beast 配置。
+"""
+
+EFFORT_PARAMS = {
+    "lite": {
+        "recall_paths": ["similarity", "contradiction", "cross_layer", "timeline"],
+        "sample_size": 1,
+        "spark_pair_limit": 5,
+        "skip_review": True,
+        "skip_arbitration": True,
+        "skip_debate": True,
+        "auto_deepen": False,
+        "deepen_rounds": 1,
+        "skip_audit": True,
+    },
+    "balanced": {
+        "recall_paths": ["similarity", "contradiction", "cross_layer", "timeline"],
+        "sample_size": 2,
+        "spark_pair_limit": 10,
+        "skip_review": False,
+        "review_top_n": 2,
+        "skip_arbitration": True,
+        "skip_debate": False,
+        "auto_deepen": False,
+        "deepen_rounds": 1,
+        "skip_audit": False,
+        "audit_top_n": 1,
+    },
+    "max": {
+        "recall_paths": ["similarity", "contradiction", "cross_project",
+                         "cross_layer", "random_walk", "timeline"],
+        "sample_size": 5,
+        "spark_pair_limit": 15,
+        "skip_review": False,
+        "review_top_n": 0,
+        "skip_arbitration": False,
+        "skip_debate": False,
+        "arbitrate_dispute_only": True,
+        "auto_deepen": True,
+        "deepen_rounds": 2,
+        "skip_audit": False,
+        "audit_top_n": 0,
+    },
+    "beast": {
+        "recall_paths": ["similarity", "contradiction", "cross_project",
+                         "cross_layer", "random_walk", "timeline"],
+        "sample_size": 10,
+        "spark_pair_limit": 20,
+        "skip_review": False,
+        "review_top_n": 0,
+        "skip_arbitration": False,
+        "skip_debate": False,
+        "arbitrate_dispute_only": False,
+        "auto_deepen": True,
+        "deepen_rounds": 3,
+        "skip_audit": False,
+        "audit_top_n": 0,
+    },
+}

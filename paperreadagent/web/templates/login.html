@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 — PaperReadAgent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+    <div class="bg-white rounded-2xl shadow-lg p-8 w-full max-w-sm mx-4">
+        <div class="text-center mb-6">
+            <h1 class="text-2xl font-bold text-indigo-600">📚 PaperReadAgent</h1>
+            <p class="text-sm text-gray-400 mt-1">
+                {{ '设定初始密码' if is_setup else '请输入密码' }}
+            </p>
+        </div>
+
+        {% if error %}
+        <div class="bg-red-50 text-red-700 text-sm p-3 rounded-lg mb-4">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" class="space-y-4">
+            <input type="password" name="password"
+                   autocomplete="current-password"
+                   class="w-full border rounded-lg px-4 py-3 text-base focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500 outline-none"
+                   placeholder="{{ '设定密码（至少6位）' if is_setup else '输入密码' }}"
+                   autofocus>
+            {% if is_setup %}
+            <input type="password" name="password_confirm"
+                   autocomplete="new-password"
+                   class="w-full border rounded-lg px-4 py-3 text-base focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500 outline-none"
+                   placeholder="再次输入密码">
+            {% endif %}
+            <button type="submit"
+                    class="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 font-medium text-base">
+                {{ '设定密码并登录' if is_setup else '登录' }}
+            </button>
+        </form>
+    </div>
+</body>
+</html>

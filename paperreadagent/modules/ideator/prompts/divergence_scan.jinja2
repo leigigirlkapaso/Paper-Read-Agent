@@ -1,0 +1,20 @@
+扫描以下圆桌讨论的一轮对话，识别模型之间的分歧和共识。
+
+## 本轮消息
+{% for msg in round_messages %}
+### {{ msg.sender_name }}（{{ msg.sender_role }}）
+{{ msg.content }}
+{% endfor %}
+
+## 分析要求
+返回 JSON：
+{
+  "divergences": [
+    {"topic": "分歧主题", "model_a": "模型A", "model_b": "模型B", "intensity": "minor|moderate|major", "detail": "具体分歧内容"}
+  ],
+  "consensus": [
+    {"topic": "共识主题", "models": ["模型A","模型B"], "detail": "共识内容"}
+  ]
+}
+
+只输出 JSON，不要其他文字。

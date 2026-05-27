@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ paper.title[:50] or 'Paper' }}{% endblock %}
+
+{% block content %}
+<!-- Mobile Header -->
+<div class="mobile-header">
+    <a href="/sessions/{{ paper.session_id }}" class="back-arrow">&#8592;</a>
+    <span class="title">{{ paper.title or '(无标题)' }}</span>
+</div>
+
+<!-- Meta bar -->
+<div class="px-3 py-2 text-xs text-gray-500 bg-white border-b">
+    {% set authors = paper.authors if paper.authors is iterable and paper.authors is not string else [] %}
+    <span>{{ authors[:3] | join(', ') }}{% if authors|length > 3 %} 等{% endif %}</span>
+    {% if paper.published %}<span class="ml-2">{{ paper.published[:10] }}</span>{% endif %}
+    <span class="ml-2 px-1.5 py-0.5 rounded text-xs
+        {% if paper.relevance_score >= 0.8 %}bg-green-100 text-green-700
+        {% elif paper.relevance_score >= 0.5 %}bg-yellow-100 text-yellow-700
+        {% else %}bg-gray-100 text-gray-500{% endif %}">
+        相关度 {{ '%.2f' % paper.relevance_score }}
+    </span>
+</div>
+
+<!-- Abstract (collapsible) -->
+{% if paper.abstract %}
+<details class="bg-white border-b px-3 py-2" open>
+    <summary class="text-sm font-semibold text-gray-600">摘要</summary>
+    <p class="text-xs text-gray-500 mt-1 leading-relaxed">{{ paper.abstract[:1500] }}{% if paper.abstract|length > 1500 %}...{% endif %}</p>
+</details>
+{% endif %}
+
+<!-- AI Analysis -->
+<div class="bg-white border-b px-3 py-3">
+    <h3 class="text-sm font-semibold mb-2">&#x1F4DD; AI 分析总结</h3>
+    {% if summary_content %}
+    <div class="prose prose-sm max-w-none text-sm leading-relaxed" id="summary-content"></div>
+    <script>document.getElementById('summary-content').innerHTML = DOMPurify.sanitize({{ summary_html | tojson }});</script>
+    {% else %}
+    <p class="text-gray-400 text-center py-6 text-sm">尚未生成总结。</p>
+    {% endif %}
+</div>
+
+<!-- Notes -->
+<div class="bg-white px-3 py-3 mobile-page">
+    <h3 class="text-sm font-semibold mb-2">&#x270F;&#xFE0F; 个人笔记</h3>
+    <form method="post" action="/papers/{{ paper.id }}/note">
+        <textarea name="content" rows="5" placeholder="写想法..."
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-yellow-300 focus:border-yellow-500 outline-none resize-y">{{ note_content }}</textarea>
+        <button type="submit" class="mt-2 w-full bg-yellow-500 text-white py-2.5 rounded-lg hover:bg-yellow-600 text-sm font-medium">
+            保存笔记
+        </button>
+    </form>
+    {% if note_updated %}<p class="text-xs text-gray-400 mt-1">更新于 {{ note_updated[:16] }}</p>{% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Thinker — PaperReadAgent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="/thinker/static/thinker.css">
+    <style>
+        body {
+            padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+
+<!-- Thinker Panel — fullscreen mode (not floating sidebar) -->
+<div data-module="thinker" class="thinker-fullscreen"
+     x-data="thinkerPanel()"
+     x-init="init(); open = true"
+     style="height: 100dvh; display: flex; flex-direction: column;">
+
+    <!-- Main panel (always visible in fullscreen, no x-show toggle) -->
+    <div class="thinker-panel" style="position: relative; right: auto; top: auto; bottom: auto;
+                width: 100%; max-width: 100%; height: 100%;
+                display: flex; flex-direction: column;
+                border-radius: 0; box-shadow: none;"
+         :class="{ minimized: minimized }">
+
+        <!-- Header -->
+        <div class="thinker-header">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <a href="/projects/" style="font-size: 20px; color: #6366f1; text-decoration: none; line-height: 1;">&larr;</a>
+                <h3>💭 小思 · 思考伙伴</h3>
+            </div>
+            <div class="thinker-header-actions">
+                <button @click="endSession()" title="结束对话" style="font-size:0.7rem">📝</button>
+            </div>
+        </div>
+
+        <!-- Messages area -->
+        <div class="chat-messages">
+            <template x-for="(msg, idx) in messages" :key="idx">
+                <div class="chat-bubble" :class="msg.role">
+                    <span x-text="msg.content"></span>
+                    <span x-show="msg.streaming" class="cursor"></span>
+                    <button x-show="msg.role === 'assistant' && !msg.streaming"
+                            class="play-tts" @click="playTTS(msg.id)" title="朗读">🔊</button>
+                </div>
+            </template>
+            <div x-show="messages.length === 0" style="color: #94a3b8; font-size: 0.8rem; text-align: center; padding: 2rem 0;">
+                嘿，我是小思。你想聊什么？<br>
+                可以自由对话，也可以切换到追问模式。
+            </div>
+        </div>
+
+        <!-- Related notes (collapsible) -->
+        <div x-show="relatedNotes.length > 0" style="padding: 0.5rem 0.75rem; border-top: 1px solid #e2e8f0; max-height: 10rem; overflow-y: auto;">
+            <div style="font-size: 0.7rem; color: #94a3b8; margin-bottom: 0.25rem;">📎 关联的历史笔记</div>
+            <template x-for="note in relatedNotes" :key="note.id">
+                <div style="font-size: 0.75rem; padding: 0.25rem 0; color: #475569; border-bottom: 1px dashed #e2e8f0;">
+                    <span x-text="note._type === 'contradiction' ? '⚠️ ' : '📄 '"></span>
+                    <span x-text="note.content?.substring(0, 100)"></span>
+                    <span x-show="note._similarity" style="color: #94a3b8; font-size: 0.65rem;" x-text="' (' + (note._similarity * 100).toFixed(0) + '%)'"></span>
+                </div>
+            </template>
+        </div>
+
+        <!-- Input area -->
+        <div class="thinker-input-area">
+            <button class="btn-mic" :class="{ recording: recording }"
+                    @click="toggleRecording()"
+                    :title="recording ? '点击停止录音' : '语音输入'"
+                    :disabled="transcribing"
+                    x-text="transcribing ? '⏳' : (recording ? '⏹ 停止' : '🎤')">
+            </button>
+            <textarea
+                x-model="input"
+                @keydown="handleKeydown"
+                @input="$el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 256) + 'px'"
+                placeholder="说点什么... (Enter 发送，Shift+Enter 换行)"
+                rows="2"
+                :disabled="loading"
+            ></textarea>
+            <button class="btn-send" @click="send()" :disabled="loading || !input.trim()">发送</button>
+        </div>
+
+        <!-- Recording / transcribing status -->
+        <div x-show="recording" style="padding: 0.3rem 0.75rem; font-size: 0.7rem; color: #dc2626; text-align: center; background: #fef2f2;">
+            🔴 正在聆听... 说完后点击 ⏹ 停止
+        </div>
+        <div x-show="transcribing" style="padding: 0.3rem 0.75rem; font-size: 0.7rem; color: #6366f1; text-align: center; background: #eef2ff;">
+            ⏳ 正在转写语音...
+        </div>
+    </div>
+
+    <!-- Question toast -->
+    <template x-if="pendingQuestion">
+        <div class="question-toast" x-transition>
+            <p><strong>💡 小思：</strong> <span x-text="pendingQuestion.question"></span></p>
+            <div class="toast-actions">
+                <button class="btn-reply" @click="input = pendingQuestion.question; dismissQuestion()">回复</button>
+                <button @click="dismissQuestion()">忽略</button>
+            </div>
+        </div>
+    </template>
+</div>
+
+<!-- Mobile Bottom Nav -->
+<nav class="mobile-nav">
+    <a href="/projects/" class="tab-item">
+        <span class="tab-icon">🏠</span><span>首页</span>
+    </a>
+    <a href="/thinker/" class="tab-item active">
+        <span class="tab-icon">💬</span><span>Thinker</span>
+    </a>
+    <a href="/ideator/" class="tab-item">
+        <span class="tab-icon">💡</span><span>Ideator</span>
+    </a>
+    <a href="/settings/" class="tab-item">
+        <span class="tab-icon">⚙</span><span>设置</span>
+    </a>
+</nav>
+
+<script src="/thinker/static/thinker.js"></script>
+</body>
+</html>

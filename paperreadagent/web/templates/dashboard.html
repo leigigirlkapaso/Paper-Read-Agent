@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — PaperReadAgent{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">研究项目</h1>
+    <button onclick="document.getElementById('new-project-form').classList.toggle('hidden')"
+            class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 text-sm">
+        + 新建项目
+    </button>
+</div>
+
+<!-- New Project Form -->
+<div id="new-project-form" class="hidden mb-6 bg-white rounded-xl shadow-sm border p-4">
+    <form method="post" action="/projects/" class="flex gap-3 items-end">
+        <div class="flex-1">
+            <label class="block text-sm font-medium text-gray-700 mb-1">项目名称</label>
+            <input type="text" name="name" required
+                   class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500 outline-none"
+                   placeholder="例如：足部触觉反馈">
+        </div>
+        <div class="flex-1">
+            <label class="block text-sm font-medium text-gray-700 mb-1">描述（可选）</label>
+            <input type="text" name="description"
+                   class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500 outline-none"
+                   placeholder="简短描述研究方向">
+        </div>
+        <button type="submit" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm">
+            创建
+        </button>
+        <button type="button" onclick="this.closest('div').classList.add('hidden')"
+                class="text-gray-500 px-4 py-2 text-sm hover:text-gray-700">取消</button>
+    </form>
+</div>
+
+<!-- Project Cards -->
+{% if projects %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for proj in projects %}
+    <a href="/projects/{{ proj.id }}"
+       class="block bg-white rounded-xl shadow-sm border hover:shadow-md hover:border-indigo-300 transition p-5">
+        <h2 class="text-lg font-semibold text-indigo-700 mb-2">{{ proj.name }}</h2>
+        {% if proj.description %}
+        <p class="text-sm text-gray-500 mb-3 truncate">{{ proj.description }}</p>
+        {% endif %}
+        <div class="flex gap-4 text-xs text-gray-400">
+            <span>{{ proj.stats.total_sessions or 0 }} 次会话</span>
+            <span>{{ proj.stats.total_papers or 0 }} 篇论文</span>
+            <span>{{ proj.stats.total_summaries or 0 }} 篇总结</span>
+        </div>
+        {% if proj.sessions %}
+        <div class="mt-3 border-t pt-3 space-y-1">
+            {% for s in proj.sessions[:3] %}
+            <div class="text-xs flex justify-between">
+                <span class="text-gray-600 truncate">{{ s.session_dir.split('/')[-1] if s.session_dir else '#' ~ s.id }}</span>
+                <span class="px-1.5 py-0.5 rounded text-xs
+                    {% if s.status == 'completed' %}bg-green-100 text-green-700
+                    {% elif s.status == 'running' %}bg-yellow-100 text-yellow-700
+                    {% elif s.status == 'failed' %}bg-red-100 text-red-700
+                    {% else %}bg-gray-100 text-gray-500{% endif %}">
+                    {{ s.status }}
+                </span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-20 text-gray-400">
+    <p class="text-4xl mb-4">📚</p>
+    <p class="text-lg">还没有研究项目。创建一个开始文献调研吧。</p>
+</div>
+{% endif %}
+{% endblock %}

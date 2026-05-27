@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}Session #{{ session.id }} — {{ project.name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <a href="/projects/{{ project.id }}" class="text-sm text-gray-500 hover:text-indigo-600">← {{ project.name }}</a>
+    <div class="flex items-center justify-between mt-1">
+        <h1 class="text-2xl font-bold">Session #{{ session.id }}</h1>
+        <div class="flex gap-2">
+            {% if session.status == 'completed' %}
+            <a href="/sessions/{{ session.id }}/report"
+               class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm">
+                📄 查看报告
+            </a>
+            {% endif %}
+            <form method="post" action="/papers/upload/{{ session.id }}"
+                  enctype="multipart/form-data"
+                  class="inline">
+                <label class="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 text-sm cursor-pointer">
+                    📤 上传 PDF
+                    <input type="file" name="files" multiple accept=".pdf" class="hidden"
+                           onchange="this.form.submit()">
+                </label>
+            </form>
+            <form method="post" action="/sessions/{{ session.id }}/delete"
+                  onsubmit="return confirm('确定删除此会话？')">
+                <button class="bg-red-100 text-red-600 px-4 py-2 rounded-lg hover:bg-red-200 text-sm">删除</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Meta -->
+<div class="session-meta bg-white rounded-xl shadow-sm border p-4 mb-6 text-sm">
+    <div><span class="text-gray-500">模式：</span>
+        <span class="font-medium">{{ {'full':'完整','collect':'搜集','analyze':'分析'}.get(session.mode, session.mode) }}</span></div>
+    <div><span class="text-gray-500">状态：</span>
+        <span class="px-1.5 py-0.5 rounded text-xs
+            {% if session.status == 'completed' %}bg-green-100 text-green-700
+            {% elif session.status == 'running' %}bg-yellow-100 text-yellow-700
+            {% elif session.status == 'failed' %}bg-red-100 text-red-700
+            {% else %}bg-gray-100 text-gray-500{% endif %}">{{ session.status }}</span></div>
+    <div><span class="text-gray-500">候选：</span>{{ session.total_candidates or 0 }} 篇</div>
+    <div><span class="text-gray-500">筛选：</span>{{ session.total_filtered or 0 }} 篇</div>
+    <div><span class="text-gray-500">下载：</span>{{ session.total_downloaded or 0 }} 篇</div>
+    <div><span class="text-gray-500">分析：</span>{{ session.total_analyzed or 0 }} 篇</div>
+    {% if session.created_at %}
+    <div><span class="text-gray-500">创建：</span>{{ session.created_at[:16] }}</div>
+    {% endif %}
+</div>
+
+<!-- Progress (SSE) -->
+{% if session.status == 'running' %}
+<div id="progress-panel" class="bg-white rounded-xl shadow-sm border p-5 mb-6"
+     data-sse-source="true"
+     hx-ext="sse" sse-connect="/sessions/{{ session.id }}/progress" sse-swap="message">
+    <div hx-ext="sse" sse-connect="/sessions/{{ session.id }}/progress">
+        <div class="flex items-center gap-3 mb-3">
+            <div class="htmx-indicator animate-spin text-lg">⏳</div>
+            <span sse-swap="stage" class="font-medium text-sm" id="progress-stage">准备中...</span>
+        </div>
+        <div class="bg-gray-200 rounded-full h-3 mb-2 overflow-hidden">
+            <div id="progress-bar" class="bg-indigo-600 h-3 rounded-full progress-bar" style="width: 0%"></div>
+        </div>
+        <p id="progress-msg" class="text-xs text-gray-500" sse-swap="message"></p>
+    </div>
+</div>
+<script>
+    // SSE progress listener
+    (function() {
+        const evtSource = new EventSource('/sessions/{{ session.id }}/progress');
+        evtSource.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                document.getElementById('progress-stage').textContent =
+                    {'init':'🚀 准备中','keywords':'🔑 关键词提取','searching':'🔍 文献检索',
+                     'filtering':'🎯 相关性筛选','downloading':'📥 下载 PDF',
+                     'reading':'📖 并发精读','reporting':'📄 生成报告',
+                     'done':'✅ 完成','error':'❌ 出错'}[data.stage] || data.stage;
+                const pct = Math.round((data.stage_index / data.total_stages) * 100);
+                document.getElementById('progress-bar').style.width = pct + '%';
+                if (data.message) {
+                    document.getElementById('progress-msg').textContent = data.message;
+                }
+                if (data.stage === 'done' || data.stage === 'error') {
+                    evtSource.close();
+                    if (data.stage === 'done') {
+                        setTimeout(() => location.reload(), 2000);
+                    }
+                    if (data.error) {
+                        document.getElementById('progress-msg').textContent = 'Error: ' + data.error;
+                        document.getElementById('progress-msg').className = 'text-xs text-red-500';
+                    }
+                }
+            } catch(e) {}
+        };
+        evtSource.onerror = function() { evtSource.close(); };
+    })();
+</script>
+{% if request.state.is_mobile %}
+<script>
+(function() {
+    var sessionId = {{ session.id }};
+    var pollTimer = null;
+
+    function pollProgress() {
+        fetch('/sessions/' + sessionId + '/progress/json')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var bar = document.getElementById('progress-bar');
+                if (bar && data.stage_index) {
+                    bar.style.width = (data.stage_index / data.total_stages * 100) + '%';
+                }
+                var label = document.getElementById('progress-msg');
+                if (label && data.messages && data.messages.length) {
+                    label.textContent = data.messages[data.messages.length - 1];
+                }
+                if (data.stage === 'done' || data.stage === 'error') {
+                    clearInterval(pollTimer);
+                    if (data.stage === 'done') {
+                        setTimeout(function() { location.reload(); }, 2000);
+                    }
+                }
+            })
+            .catch(function() {});
+    }
+
+    var sseCheck = setTimeout(function() {
+        pollTimer = setInterval(pollProgress, 5000);
+    }, 3000);
+
+    if (typeof EventSource !== 'undefined') {
+        var esFound = document.querySelector('[data-sse-source]');
+        if (esFound) {
+            clearTimeout(sseCheck);
+        }
+    }
+})();
+</script>
+{% endif %}
+{% endif %}
+
+<!-- Paper Grid -->
+<h2 class="text-lg font-semibold mb-3">
+    论文列表
+    <span class="text-sm text-gray-400 font-normal ml-2">
+        {{ papers|length }} 篇（{{ downloaded }} 已下载 / {{ analyzed }} 已分析 / {{ failed }} 下载失败）
+    </span>
+</h2>
+
+{% if papers %}
+<div class="paper-grid">
+    {% for p in papers %}
+    <div class="bg-white rounded-lg border hover:border-indigo-300 hover:shadow-sm transition p-4">
+        <a href="/papers/{{ p.id }}" class="block">
+            <h3 class="font-medium text-sm leading-snug mb-2 line-clamp-2">{{ p.title or '(无标题)' }}</h3>
+            {% set authors = p.authors if p.authors is iterable and p.authors is not string else [] %}
+            {% if authors %}
+            <p class="text-xs text-gray-500 mb-2">{{ authors[:3] | join(', ') }}{% if authors|length > 3 %} 等{% endif %}</p>
+            {% endif %}
+            <div class="flex items-center justify-between mt-2">
+                <span class="text-xs px-1.5 py-0.5 rounded
+                    {% if p.relevance_score >= 0.8 %}bg-green-100 text-green-700
+                    {% elif p.relevance_score >= 0.5 %}bg-yellow-100 text-yellow-700
+                    {% else %}bg-gray-100 text-gray-500{% endif %}">
+                    相关度 {{ '%.2f' % p.relevance_score }}
+                </span>
+                <span class="text-xs text-gray-400">
+                    {% if p.download_status == 'success' %}✅
+                    {% elif p.download_status == 'failed' %}❌
+                    {% elif p.download_status == 'skipped' %}⏭
+                    {% else %}⏳{% endif %}
+                    {% if p.summary_status in ('success','cached') %}📝{% endif %}
+                </span>
+            </div>
+            {% if p.published %}
+            <div class="text-xs text-gray-400 mt-1">{{ p.published[:10] }}</div>
+            {% endif %}
+        </a>
+        {% if p.download_status == 'failed' and p.source_url %}
+        <div class="mt-2 pt-2 border-t border-dashed border-gray-200">
+            <p class="text-xs text-gray-500 truncate mb-1">下载源：<a href="{{ p.source_url }}" target="_blank" class="text-indigo-500 underline">{{ p.source_url[:60] }}{% if p.source_url|length > 60 %}...{% endif %}</a></p>
+            <div class="flex gap-1 mt-1">
+                <button hx-post="/papers/{{ p.id }}/retry-download"
+                        hx-swap="outerHTML"
+                        class="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded hover:bg-indigo-200 whitespace-nowrap">
+                    自动重试
+                </button>
+                <form method="post" action="/papers/{{ p.id }}/retry-upload" enctype="multipart/form-data" class="flex gap-1 flex-1">
+                    <input type="file" name="file" accept=".pdf" required class="text-xs border rounded px-1 py-0.5 w-full">
+                    <button type="submit" class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded hover:bg-green-200 whitespace-nowrap">上传补填</button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+
+{% if analyzed < papers|length %}
+<div class="mt-4 p-3 bg-yellow-50 rounded-lg border border-yellow-200 flex items-center justify-between">
+    <span class="text-sm text-yellow-700">
+        ⚠️ {{ papers|length - analyzed }} 篇论文尚未生成分析总结
+    </span>
+    <form method="post" action="/sessions/{{ session.id }}/reanalyze">
+        <button type="submit" class="bg-yellow-500 text-white px-4 py-1.5 rounded-lg hover:bg-yellow-600 text-sm">
+            🔄 重新分析未完成的
+        </button>
+    </form>
+</div>
+{% endif %}
+{% else %}
+<p class="text-gray-400 py-10 text-center">暂无论文。运行 pipeline 或上传 PDF 来添加。</p>
+{% endif %}
+
+<script>
+// 如果当前 URL 是 /sessions/start/X，替换为 /sessions/X
+if (location.pathname.includes('/sessions/start/')) {
+    history.replaceState(null, '', '/sessions/{{ session.id }}');
+}
+</script>
+{% endblock %}

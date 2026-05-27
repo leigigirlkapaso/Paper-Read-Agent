@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}文献检索 — PaperReadAgent{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">跨会话文献检索</h1>
+
+<!-- Search Form -->
+<form method="get" action="/papers/search" class="bg-white rounded-xl shadow-sm border p-4 mb-6">
+    <div class="flex gap-3">
+        <input type="text" name="q" value="{{ query }}" placeholder="搜索标题、摘要、venue..."
+               class="flex-1 border rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500 outline-none">
+        <select name="project_id" class="border rounded-lg px-3 py-2 text-sm">
+            <option value="">所有项目</option>
+            {% for p in projects %}
+            <option value="{{ p.id }}" {% if selected_project == p.id %}selected{% endif %}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 text-sm">
+            搜索
+        </button>
+    </div>
+</form>
+
+<!-- Results -->
+{% if results %}
+<p class="text-sm text-gray-500 mb-4">{{ results|length }} 条结果</p>
+<div class="space-y-3">
+    {% for r in results %}
+    <a href="/papers/{{ r.id }}"
+       class="block bg-white rounded-lg border hover:border-indigo-300 hover:shadow-sm transition p-4">
+        <div class="flex items-start justify-between">
+            <div class="flex-1 min-w-0">
+                <h3 class="font-medium text-sm leading-snug">{{ r.title or '(无标题)' }}</h3>
+                {% set authors = r.authors if r.authors is iterable and r.authors is not string else [] %}
+                {% if authors %}
+                <p class="text-xs text-gray-500 mt-1">{{ authors[:3] | join(', ') }}{% if authors|length > 3 %} 等{% endif %}</p>
+                {% endif %}
+                <div class="flex gap-2 mt-1 text-xs text-gray-400">
+                    <span>{{ r.project_name or '' }}</span>
+                    {% if r.venue %}<span>· {{ r.venue }}</span>{% endif %}
+                    {% if r.published %}<span>· {{ r.published[:10] }}</span>{% endif %}
+                </div>
+            </div>
+            <span class="text-xs px-2 py-1 rounded text-nowrap
+                {% if r.relevance_score >= 0.8 %}bg-green-100 text-green-700
+                {% elif r.relevance_score >= 0.5 %}bg-yellow-100 text-yellow-700
+                {% else %}bg-gray-100 text-gray-500{% endif %}">
+                {{ '%.2f' % r.relevance_score }}
+            </span>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% elif query %}
+<p class="text-gray-400 py-10 text-center">未找到匹配 "{{ query }}" 的论文。</p>
+{% else %}
+<div class="text-center py-20 text-gray-400">
+    <p class="text-4xl mb-4">🔍</p>
+    <p>输入关键词搜索所有已分析的论文。</p>
+</div>
+{% endif %}
+{% endblock %}

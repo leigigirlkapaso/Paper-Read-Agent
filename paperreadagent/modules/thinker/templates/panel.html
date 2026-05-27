@@ -1,0 +1,95 @@
+<div data-module="thinker" x-data="thinkerPanel()">
+  <!-- 触发按钮 -->
+  <button class="thinker-toggle" x-show="!open" @click="toggle()" title="小思">
+    💬
+  </button>
+
+  <!-- 侧边栏面板 -->
+  <div class="thinker-panel" :class="{ minimized: minimized }" x-show="open"
+       x-transition:enter="transition ease-out duration-250"
+       x-transition:enter-start="translate-x-full"
+       x-transition:enter-end="translate-x-0"
+       x-transition:leave="transition ease-in duration-200"
+       x-transition:leave-start="translate-x-0"
+       x-transition:leave-end="translate-x-full">
+
+    <!-- 头部 -->
+    <div class="thinker-header">
+      <h3>💭 小思 · 思考伙伴</h3>
+      <div class="thinker-header-actions">
+        <button @click="endSession()" title="结束对话" style="font-size:0.7rem">📝</button>
+        <button @click="minimize()" title="收起">_</button>
+        <button @click="toggle()" title="关闭">✕</button>
+      </div>
+    </div>
+
+    <!-- 消息列表 -->
+    <div class="chat-messages">
+      <template x-for="(msg, idx) in messages" :key="idx">
+        <div class="chat-bubble" :class="msg.role">
+          <span x-text="msg.content"></span>
+          <span x-show="msg.streaming" class="cursor"></span>
+          <button x-show="msg.role === 'assistant' && !msg.streaming"
+                  class="play-tts" @click="playTTS(msg.id)" title="朗读">🔊
+          </button>
+        </div>
+      </template>
+      <div x-show="messages.length === 0" style="color: #94a3b8; font-size: 0.8rem; text-align: center; padding: 2rem 0;">
+        嘿，我是小思。你想聊什么？<br>
+        可以自由对话，也可以切换到追问模式。
+      </div>
+    </div>
+
+    <!-- 关联笔记 -->
+    <div x-show="relatedNotes.length > 0" style="padding: 0.5rem 0.75rem; border-top: 1px solid #e2e8f0; max-height: 10rem; overflow-y: auto;">
+      <div style="font-size: 0.7rem; color: #94a3b8; margin-bottom: 0.25rem;">📎 关联的历史笔记</div>
+      <template x-for="note in relatedNotes" :key="note.id">
+        <div style="font-size: 0.75rem; padding: 0.25rem 0; color: #475569; border-bottom: 1px dashed #e2e8f0;">
+          <span x-text="note._type === 'contradiction' ? '⚠️ ' : '📄 '"></span>
+          <span x-text="note.content?.substring(0, 100)"></span>
+          <span x-show="note._similarity" style="color: #94a3b8; font-size: 0.65rem;" x-text="' (' + (note._similarity * 100).toFixed(0) + '%)'"></span>
+        </div>
+      </template>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="thinker-input-area">
+      <button class="btn-mic" :class="{ recording: recording }"
+              @click="toggleRecording()"
+              :title="recording ? '点击停止录音' : '语音输入'"
+              :disabled="transcribing"
+              x-text="transcribing ? '⏳' : (recording ? '⏹ 停止' : '🎤')">
+      </button>
+      <textarea
+        x-model="input"
+        @keydown="handleKeydown"
+        @input="$el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 256) + 'px'"
+        placeholder="说点什么... (Enter 发送，Shift+Enter 换行)"
+        rows="2"
+        :disabled="loading"
+      ></textarea>
+      <button class="btn-send" @click="send()" :disabled="loading || !input.trim()">
+        发送
+      </button>
+    </div>
+
+    <!-- 录音状态提示 -->
+    <div x-show="recording" style="padding: 0.3rem 0.75rem; font-size: 0.7rem; color: #dc2626; text-align: center; background: #fef2f2;">
+      🔴 正在聆听... 说完后点击 ⏹ 停止
+    </div>
+    <div x-show="transcribing" style="padding: 0.3rem 0.75rem; font-size: 0.7rem; color: #6366f1; text-align: center; background: #eef2ff;">
+      ⏳ 正在转写语音...
+    </div>
+  </div>
+
+  <!-- 主动提问弹窗 -->
+  <template x-if="pendingQuestion">
+    <div class="question-toast" x-transition>
+      <p><strong>💡 小思：</strong> <span x-text="pendingQuestion.question"></span></p>
+      <div class="toast-actions">
+        <button class="btn-reply" @click="input = pendingQuestion.question; dismissQuestion()">回复</button>
+        <button @click="dismissQuestion()">忽略</button>
+      </div>
+    </div>
+  </template>
+</div>

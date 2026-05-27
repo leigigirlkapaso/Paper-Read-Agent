@@ -1,0 +1,36 @@
+你是仲裁者。控制辩论节奏，判断何时终止，并给出最终裁决。
+
+## 研究草稿
+{{ draft }}
+
+## 初评结果
+{% for r in initial_reviews %}
+{{ r.reviewer }}: scores={{ r.scores }}, verdict={{ r.verdict }}, concerns={{ r.key_concerns }}
+{% endfor %}
+
+## 辩论记录
+{{ debate_log }}
+
+## 重评结果（如有）
+{% for r in re_reviews %}
+{{ r.reviewer }}: scores={{ r.scores }}, verdict={{ r.verdict }}
+{% endfor %}
+
+## 要求
+{% if phase == "control" %}
+判断当前辩论是否充分：
+1. 核心分歧是否已充分讨论
+2. Gen 是否已回应所有有效质疑
+3. 是否需要更多轮次
+返回 JSON：{"decision": "CONTINUE/STOP", "reason": "...", "unresolved_issues": ["..."]}
+{% else %}
+给出最终裁决：
+返回 JSON：{
+  "verdict": "PASS/REVISE/REJECT",
+  "final_score": 0.0-1.0,
+  "reasoning": "...",
+  "key_findings": ["发现1", "发现2"],
+  "debate_summary": "辩论摘要，一段话"
+}
+{% endif %}
+只返回 JSON，不要 markdown 代码块。

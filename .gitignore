@@ -1,0 +1,38 @@
+# Sensitive config (contains API keys)
+config.yaml
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.superpowers/
+
+# Project data (contains API keys in session snapshots)
+projects/
+
+# IDE / Editor config
+.claude/
+.cursor/
+.aris/
+
+# Test artifacts
+.pytest_cache/
+
+# Legacy output
+outputs/
+
+# Sensitive files
+.env
+.DS_Store
+*.log

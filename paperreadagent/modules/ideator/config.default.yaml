@@ -1,0 +1,32 @@
+# modules/ideator/config.default.yaml
+# Ideator 模块默认配置。
+
+modules:
+  ideator:
+    # 模型路由映射（当前统一使用 core.llm → deepseek-v4-pro）
+    models:
+      scorer: "gemini-3-flash-preview"        # T1: LinkScorer
+      generator: ""                            # 空=跟随 core.llm (deepseek)
+      reviewer_1: "gemini-3-flash-preview"     # T2: 审查者1
+      reviewer_2: "qwen3.6-plus"              # T2: 审查者2
+      arbiter: "claude-opus-4-7-max"          # T3: 仲裁/深化
+      auditor: "qwen3.6-plus"                 # S6: 溯源审计
+
+    # 仲裁触发阈值
+    arbitration:
+      both_high_threshold: 0.8         # 双方 ≥ 此值 → 高价值 Tier 3 深化
+      divergence_threshold: 0.25       # |R1-R2| ≥ 此值 → Tier 3 仲裁
+      both_low_threshold: 0.4          # 双方 ≤ 此值 → 直接 REJECT
+
+    # 迭代深化
+    deepen:
+      pass_threshold: 0.7              # 审查分数 ≥ 此值通过
+      max_rounds: 3                    # 最大迭代轮数
+
+    # 去重（不变）
+    dedup_merge_threshold: 0.85
+    dedup_flag_threshold: 0.6
+
+    # 调度（不变）
+    full_mine_hour: 3
+    gc_interval_minutes: 30

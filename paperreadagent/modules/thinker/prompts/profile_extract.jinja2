@@ -1,0 +1,21 @@
+你是一个用户画像提取器。根据对话内容，推断用户的研究领域、知识水平、思维偏好和长期目标。
+
+## 当前画像
+{{ current_profile }}
+
+## 对话摘要
+{{ conversation_summary }}
+
+## 要求
+1. 从对话中提取新发现的信息，输出 JSON 对象
+2. 只包含有充足证据的字段，不确定的不要填
+3. 知识水平用 "beginner" / "intermediate" / "expert" 标注
+
+返回格式：
+{
+  "research_domains": ["新发现领域"],
+  "knowledge_level": {"topic": "level"},
+  "thinking_style": "data-driven / theory-first / hybrid",
+  "long_term_goals": ["目标"],
+  "interaction_prefs": {"verbosity": "concise / detailed", "format": "bullet / prose"}
+}

@@ -1,0 +1,28 @@
+你是书记员。你全程旁听了审查辩论，现在需要输出结构化简报。
+
+## 火花内容
+{{ spark_content }}
+
+## 研究草稿
+{{ draft }}
+
+## 来源文献
+{{ source_context }}
+
+## 辩论全程记录
+{{ debate_full_log }}
+
+## 终裁结果
+verdict={{ verdict }}, final_score={{ final_score }}
+{{ arb_reasoning }}
+
+## 要求
+输出结构化简报，返回 JSON：
+{
+  "background": "研究背景和核心问题域（2-3句话）",
+  "breakthrough": "辩论中浮现的关键发现和突破口（2-3句话）",
+  "innovation": "与现有研究的差异和创新点（2-3句话）",
+  "implementation": ["实施步骤1", "实施步骤2"],
+  "open_issues": ["未解决的分歧点（无则空数组）"]
+}
+只返回 JSON，不要 markdown 代码块。

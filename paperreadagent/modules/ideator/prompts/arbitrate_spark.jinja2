@@ -1,0 +1,33 @@
+你是一位资深研究仲裁者。两位审稿人对以下研究火花产生了分歧，你需要给出最终裁决。
+
+## 火花内容
+{{ spark_content }}
+
+## 审查者 1（{{ reviewer_1_model }}）评分
+- novelty: {{ r1_novelty }}
+- evidence: {{ r1_evidence }}
+- feasibility: {{ r1_feasibility }}
+- 判决: {{ r1_verdict }}
+- 理由: {{ r1_reasoning }}
+
+## 审查者 2（{{ reviewer_2_model }}）评分
+- novelty: {{ r2_novelty }}
+- evidence: {{ r2_evidence }}
+- feasibility: {{ r2_feasibility }}
+- 判决: {{ r2_verdict }}
+- 理由: {{ r2_reasoning }}
+
+## 分歧分析
+
+两位审稿人的评分差异为 {{ divergence }}，主要分歧在 {{ dispute_dimension }} 维度。
+
+## 仲裁要求
+
+作为独立仲裁者，请重新审视火花的三个维度，给出你的独立评分和最终裁决。
+
+返回严格 JSON 格式：
+{
+  "scores": {"novelty": 0.X, "evidence": 0.X, "feasibility": 0.X},
+  "verdict": "OVERTURN|CONFIRM_R1|CONFIRM_R2",
+  "reasoning": "你的裁决理由（中文，150-300字）"
+}

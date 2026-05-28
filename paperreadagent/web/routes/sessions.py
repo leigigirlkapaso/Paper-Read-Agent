@@ -39,10 +39,37 @@ async def session_new_form(request: Request, project_id: int):
     if config_path.exists():
         default_config = config_path.read_text(encoding="utf-8")
 
+    # 解析 config 注入前端表单默认值
+    import json as _json
+    _cfg = yaml.safe_load(default_config) if default_config else {}
+    form_defaults = _json.dumps({
+        "topic": (_cfg.get("research") or {}).get("topic", "").strip(),
+        "api_base_url": (_cfg.get("llm") or {}).get("api_base_url", "https://api.deepseek.com"),
+        "api_key": (_cfg.get("llm") or {}).get("api_key", ""),
+        "model_name": (_cfg.get("llm") or {}).get("model_name", "deepseek-v4-pro"),
+        "temperature": (_cfg.get("llm") or {}).get("temperature", 0.3),
+        "max_search_results": (_cfg.get("research") or {}).get("max_search_results", 100),
+        "min_search_results": (_cfg.get("research") or {}).get("min_search_results", 200),
+        "max_queries": (_cfg.get("research") or {}).get("max_queries", 8),
+        "query_delay": (_cfg.get("research") or {}).get("query_delay", 8),
+        "relevance_threshold": (_cfg.get("research") or {}).get("relevance_threshold", 0.6),
+        "max_download_papers": (_cfg.get("research") or {}).get("max_download_papers", 50),
+        "min_year": (_cfg.get("research") or {}).get("min_year", 2022),
+        "sort_by": (_cfg.get("research") or {}).get("sort_by", "date"),
+        "max_concurrent": (_cfg.get("concurrency") or {}).get("max_concurrent", 100),
+        "max_chars": (_cfg.get("pdf") or {}).get("max_chars", 80000),
+        "summary_prompt": (_cfg.get("summary_prompt") or "").strip(),
+        "source_arxiv": (_cfg.get("sources") or {}).get("arxiv", True),
+        "source_s2": (_cfg.get("sources") or {}).get("semantic_scholar", False),
+        "source_pwc": (_cfg.get("sources") or {}).get("papers_with_code", False),
+        "source_oa": (_cfg.get("sources") or {}).get("openalex", False),
+    })
+
     return templates.TemplateResponse("session_new.html", {
         "request": request,
         "project": project,
         "default_config": default_config,
+        "form_defaults_json": form_defaults,
     })
 
 
@@ -90,7 +117,7 @@ async def session_start(
     progress.started_at = datetime.now().timestamp()
 
     # 后台启动 pipeline
-    import main as main_module
+    from paperreadagent import main as main_module
     from utils.llm_client import LLMClient
 
     def _on_progress(stage: str, message: str):
@@ -395,7 +422,7 @@ async def session_reanalyze(request: Request, session_id: int):
         return HTMLResponse("<p class='p-4 text-gray-500'>所有论文已分析完毕，无需重新分析。</p>")
 
     # 后台启动分析
-    import main as main_module
+    from paperreadagent import main as main_module
     from utils.llm_client import LLMClient
     import yaml as _yaml
 

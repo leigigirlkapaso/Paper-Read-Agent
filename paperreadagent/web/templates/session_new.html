@@ -128,23 +128,24 @@
 {% block scripts %}
 <script>
 function configForm() {
+    const _defaults = {{ form_defaults_json | safe }};
     return {
-        topic: '在此填写你的研究构想...',
-        api_base_url: 'https://api.deepseek.com',
-        api_key: 'sk-YOUR_API_KEY_HERE',
-        model_name: 'deepseek-v4-pro',
-        temperature: 0.3,
-        max_search_results: 100,
-        min_search_results: 200,
-        max_queries: 8,
-        query_delay: 8,
-        relevance_threshold: 0.6,
-        max_download_papers: 50,
-        min_year: 2022,
-        sort_by: 'date',
-        max_concurrent: 100,
-        max_chars: 80000,
-        summary_prompt: `你是一位资深科研助理，擅长"文献精读 + 研究对齐 + 申博定位"，并且尤其擅长从论文的用户研究中提炼可迁移的设计洞察与评估范式。请对下面提供的论文内容进行结构化分析，并重点阐释该论文如何帮助我把自己的研究摘要与目标导师的研究方向（即这篇论文）建立清晰、可操作的连接。
+        topic: _defaults.topic || '在此填写你的研究构想...',
+        api_base_url: _defaults.api_base_url || 'https://api.deepseek.com',
+        api_key: _defaults.api_key || 'sk-YOUR_API_KEY_HERE',
+        model_name: _defaults.model_name || 'deepseek-v4-pro',
+        temperature: _defaults.temperature ?? 0.3,
+        max_search_results: _defaults.max_search_results || 100,
+        min_search_results: _defaults.min_search_results || 200,
+        max_queries: _defaults.max_queries || 8,
+        query_delay: _defaults.query_delay || 8,
+        relevance_threshold: _defaults.relevance_threshold ?? 0.6,
+        max_download_papers: _defaults.max_download_papers || 50,
+        min_year: _defaults.min_year || 2022,
+        sort_by: _defaults.sort_by || 'date',
+        max_concurrent: _defaults.max_concurrent || 100,
+        max_chars: _defaults.max_chars || 80000,
+        summary_prompt: _defaults.summary_prompt || `你是一位资深科研助理，擅长"文献精读 + 研究对齐 + 申博定位"，并且尤其擅长从论文的用户研究中提炼可迁移的设计洞察与评估范式。请对下面提供的论文内容进行结构化分析，并重点阐释该论文如何帮助我把自己的研究摘要与目标导师的研究方向（即这篇论文）建立清晰、可操作的连接。
 
 严格按照以下 7 个维度输出，使用 Markdown 加粗标题，用中文回答，不要输出任何前言或结语。
 

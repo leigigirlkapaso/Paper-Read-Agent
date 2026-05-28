@@ -57,7 +57,7 @@ class QuestionGenerator:
             last_msg_time = conv["last_msg_time"]
             if last_msg_time:
                 try:
-                    last_time = datetime.fromisoformat(last_msg_time)
+                    last_time = datetime.fromisoformat(last_msg_time).replace(tzinfo=timezone.utc)
                     elapsed = (now - last_time).total_seconds()
                     if elapsed < timeout_minutes * 60:
                         continue

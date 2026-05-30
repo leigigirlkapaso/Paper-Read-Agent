@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小思 Thinker — PaperReadAgent</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/17.0.0/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
+    <link rel="stylesheet" href="/thinker/static/thinker.css">
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="/projects/" class="text-xl font-bold text-indigo-600 hover:text-indigo-800">
+                📚 PaperReadAgent
+            </a>
+            <div class="flex gap-4 text-sm">
+                <a href="/projects/" class="text-gray-600 hover:text-indigo-600">项目</a>
+                <a href="/papers/notes" class="text-gray-600 hover:text-indigo-600">笔记</a>
+                <a href="/papers/search" class="text-gray-600 hover:text-indigo-600">检索</a>
+                <a href="/papers/graph" class="text-gray-600 hover:text-indigo-600">关系图</a>
+                <a href="/ideator/" class="text-gray-600 hover:text-indigo-600">火花</a>
+                <a href="/thinker/" class="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-md font-medium">💬 小思</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-[96vw] mx-auto px-4 py-4" x-data="thinkerPage()">
+        <!-- Tab Bar -->
+        <div class="flex border-b border-gray-200 mb-4">
+            <button @click="activeTab = 'chat'"
+                    :class="activeTab === 'chat' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+                    class="px-6 py-3 font-medium text-sm border-b-2 transition-colors">
+                💬 对话
+            </button>
+            <button @click="activeTab = 'rehearsal'"
+                    :class="activeTab === 'rehearsal' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+                    class="px-6 py-3 font-medium text-sm border-b-2 transition-colors">
+                🎤 演讲预演
+            </button>
+            <button @click="activeTab = 'records'; loadRecords()"
+                    :class="activeTab === 'records' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+                    class="px-6 py-3 font-medium text-sm border-b-2 transition-colors">
+                📋 记录
+            </button>
+        </div>
+
+        <!-- Tab: Chat -->
+        <div x-show="activeTab === 'chat'" x-cloak class="flex" style="height: calc(100vh - 140px);">
+            {% include "thinker/chat_tab.html" %}
+        </div>
+
+        <!-- Tab: Rehearsal -->
+        <div x-show="activeTab === 'rehearsal'" x-cloak class="flex" style="height: calc(100vh - 140px);">
+            {% include "thinker/rehearsal_tab.html" %}
+        </div>
+
+        <!-- Tab: Records -->
+        <div x-show="activeTab === 'records'" x-cloak>
+            {% include "thinker/records_tab.html" %}
+        </div>
+    </main>
+
+    <script src="/thinker/static/thinker.js"></script>
+</body>
+</html>

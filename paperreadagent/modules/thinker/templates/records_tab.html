@@ -1,0 +1,53 @@
+<!-- Records Tab: Uses Alpine component thinkerRecords() -->
+<div x-data="thinkerRecords()" x-init="loadRecords()">
+    <div class="flex items-center gap-3 mb-4">
+        <input x-model="searchQuery" @input.debounce.300ms="loadRecords()"
+               type="text" placeholder="🔍 搜索历史记录..."
+               class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 outline-none">
+        <select x-model="recordType" @change="loadRecords()"
+                class="text-sm border rounded-lg px-3 py-2 bg-white">
+            <option value="">全部类型</option>
+            <option value="rehearsal">🎤 演讲预演</option>
+        </select>
+    </div>
+
+    <!-- Record list -->
+    <div class="space-y-2">
+        <template x-for="rec in records" :key="rec.id">
+            <div @click="viewDetail(rec.id)"
+                 class="bg-white border border-gray-200 rounded-lg p-4 cursor-pointer hover:border-indigo-300 hover:shadow-sm transition-all flex gap-4 items-start">
+                <div class="text-2xl flex-shrink-0">🎤</div>
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                        <h4 class="font-medium text-sm" x-text="rec.title"></h4>
+                        <span class="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded text-xs">演讲预演</span>
+                        <span x-show="rec.status === 'completed'" class="bg-green-50 text-green-700 px-1.5 py-0.5 rounded text-xs">已完成</span>
+                    </div>
+                    <p class="text-xs text-gray-500" x-text="rec.created_at"></p>
+                    <p class="text-xs text-gray-400 mt-1 truncate" x-text="rec.summary_briefing || '暂无简报'"></p>
+                </div>
+                <span class="text-gray-400 flex-shrink-0">→</span>
+            </div>
+        </template>
+        <div x-show="records.length === 0" class="text-center text-gray-400 py-12">
+            暂无记录
+        </div>
+    </div>
+
+    <!-- Detail modal -->
+    <div x-show="selectedDetail" class="fixed inset-0 bg-black/30 z-50 flex items-start justify-center pt-12 overflow-y-auto"
+         @click.self="selectedDetail = null">
+        <div class="bg-white rounded-xl shadow-xl max-w-3xl w-full mx-4 my-8 max-h-[85vh] overflow-y-auto">
+            <div class="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between rounded-t-xl z-10">
+                <h2 class="font-bold text-lg" x-text="selectedDetail?.title || ''"></h2>
+                <button @click="selectedDetail = null" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+            <div class="p-6" x-show="selectedDetail">
+                <!-- Embed the four-part summary display -->
+                <div x-data="{ summaryData: selectedDetail }">
+                    {% include "thinker/rehearsal_summary.html" %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

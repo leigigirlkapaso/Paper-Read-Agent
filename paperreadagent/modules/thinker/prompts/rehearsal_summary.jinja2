@@ -1,0 +1,44 @@
+You are a senior academic presentation coach. Generate a structured summary report based on the following rehearsal transcript.
+
+## Presentation Transcript
+{{ presentation_text }}
+
+## Q&A Transcript
+{{ qa_text }}
+
+## Output Format
+
+Output strictly as JSON, no extra text:
+
+```json
+{
+  "briefing": "Presentation briefing in Chinese, 300-500 characters. Include: content overview, Q&A performance highlights, overall improvement direction.",
+  "grammar_corrections": [
+    {
+      "id": 1,
+      "original": "exact original English sentence with error",
+      "corrected": "corrected sentence",
+      "note": "explanation of the grammar/word choice issue in Chinese"
+    }
+  ],
+  "suggestions": [
+    {
+      "id": 1,
+      "category": "内容建议|表达建议|优化示范",
+      "issue": "problem description in Chinese",
+      "suggestion": "specific actionable suggestion in Chinese",
+      "example": "improved example text, or empty string if not applicable"
+    }
+  ]
+}
+```
+
+## Requirements
+
+- **briefing**: Objective assessment, mention both strengths and weaknesses. Cover: what the presentation was about, Q&A performance, overall direction for improvement. Write in Chinese.
+- **grammar_corrections**: Only fix clear grammar errors or word choice mistakes — NOT style preferences. Every entry MUST include an exact original quote. Empty array if no errors found.
+- **suggestions**: Categorized into three types:
+  - 内容建议 (Content): arguments, structure, evidence
+  - 表达建议 (Delivery): pacing, filler words, phrasing, Q&A response structure
+  - 优化示范 (Example Rewrite): provide a concrete before/after rewrite example
+  Each suggestion must be specific and actionable. Write in Chinese.

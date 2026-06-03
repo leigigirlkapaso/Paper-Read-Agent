@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}笔记索引 — PaperReadAgent{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">📒 笔记索引</h1>
+
+<!-- Filter -->
+<form method="get" action="/papers/notes" class="bg-white rounded-lg border p-3 mb-6 flex gap-3 items-center text-sm">
+    <span class="text-gray-500">筛选项目：</span>
+    <select name="project_id" class="border rounded px-2 py-1 text-sm" onchange="this.form.submit()">
+        <option value="">全部项目</option>
+        {% for p in projects %}
+        <option value="{{ p.id }}" {% if selected_project == p.id %}selected{% endif %}>{{ p.name }}</option>
+        {% endfor %}
+    </select>
+    <span class="text-gray-400 text-xs">共 {{ notes|length }} 条笔记</span>
+</form>
+
+{% if notes %}
+<div class="space-y-4">
+    {% for n in notes %}
+    <div class="bg-white rounded-lg border hover:border-yellow-300 transition p-4">
+        <div class="flex items-start justify-between mb-2">
+            <div>
+                <span class="text-xs px-2 py-0.5 bg-gray-100 rounded text-gray-500">{{ n.project_name or '未知项目' }}</span>
+                <a href="/papers/{{ n.paper_id }}" class="font-medium text-sm ml-2 hover:text-indigo-600">
+                    {{ n.paper_title or '(无标题)' }}
+                </a>
+            </div>
+            <span class="text-xs text-gray-400">{{ n.updated_at[:16] if n.updated_at else '' }}</span>
+        </div>
+        <div class="text-sm text-gray-600 leading-relaxed prose prose-sm max-w-none line-clamp-4 ai-content-mount"
+             id="note-content-{{ n.id }}"></div>
+        <script>window.__AIContentData = window.__AIContentData || {}; window.__AIContentData['note-content-{{ n.id }}'] = {{ n.content[:500] | tojson }};</script>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-20 text-gray-400">
+    <p class="text-4xl mb-4">📝</p>
+    <p>暂无笔记。在论文详情页写第一条笔记吧。</p>
+</div>
+{% endif %}
+{% endblock %}

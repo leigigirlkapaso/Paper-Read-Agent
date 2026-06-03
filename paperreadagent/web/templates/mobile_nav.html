@@ -1,0 +1,20 @@
+{% if request.state.is_mobile %}
+<nav class="mobile-nav">
+    <a href="/projects/" class="tab-item {{ 'active' if request.url.path.startswith('/projects') or (not request.url.path.startswith('/thinker') and not request.url.path.startswith('/ideator') and not request.url.path.startswith('/settings') and not request.url.path.startswith('/login')) }}">
+        <span class="tab-icon">🏠</span>
+        <span>首页</span>
+    </a>
+    <a href="/thinker/" class="tab-item {{ 'active' if request.url.path.startswith('/thinker') }}">
+        <span class="tab-icon">💬</span>
+        <span>Thinker</span>
+    </a>
+    <a href="/ideator/" class="tab-item {{ 'active' if request.url.path.startswith('/ideator') }}">
+        <span class="tab-icon">💡</span>
+        <span>Ideator</span>
+    </a>
+    <a href="/settings/" class="tab-item {{ 'active' if request.url.path.startswith('/settings') }}">
+        <span class="tab-icon">⚙</span>
+        <span>设置</span>
+    </a>
+</nav>
+{% endif %}

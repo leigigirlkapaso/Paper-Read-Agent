@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+{% block title %}{{ paper.title[:50] or 'Paper' }}{% endblock %}
+
+{% block head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs" type="module"></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+    <a href="/sessions/{{ paper.session_id }}" class="text-sm text-gray-500 hover:text-indigo-600">
+        ← Session #{{ paper.session_id }}
+    </a>
+    <h1 class="text-xl font-bold mt-1">{{ paper.title or '(无标题)' }}</h1>
+    {% set authors = paper.authors if paper.authors is iterable and paper.authors is not string else [] %}
+    <div class="flex gap-4 text-sm text-gray-500 mt-1">
+        <span>{{ authors[:5] | join(', ') }}{% if authors|length > 5 %} 等{% endif %}</span>
+        {% if paper.published %}<span>{{ paper.published[:10] }}</span>{% endif %}
+        <span class="px-1.5 py-0.5 rounded text-xs
+            {% if paper.relevance_score >= 0.8 %}bg-green-100 text-green-700
+            {% elif paper.relevance_score >= 0.5 %}bg-yellow-100 text-yellow-700
+            {% else %}bg-gray-100 text-gray-500{% endif %}">
+            相关度 {{ '%.2f' % paper.relevance_score }}
+        </span>
+        {% if paper.venue %}<span class="text-indigo-500">{{ paper.venue }}</span>{% endif %}
+                <button class="text-xl transition-colors {% if is_favorited %}text-yellow-500{% else %}text-gray-300 hover:text-yellow-400{% endif %}"
+                        hx-post="/papers/{{ paper.id }}/fav"
+                        hx-swap="outerHTML"
+                        title="{% if is_favorited %}取消收藏{% else %}收藏{% endif %}">
+                    {% if is_favorited %}★{% else %}☆{% endif %}
+                </button>
+    </div>
+</div>
+
+{% if paper.abstract %}
+<div class="bg-white rounded-lg border p-4 mb-4">
+    <h3 class="font-semibold text-sm mb-1">摘要</h3>
+    <p class="text-sm text-gray-600 leading-relaxed">{{ paper.abstract[:2000] }}{% if paper.abstract|length > 2000 %}...{% endif %}</p>
+</div>
+{% endif %}
+
+<div class="split-view">
+    <!-- Left: PDF -->
+    <div class="split-left bg-white rounded-lg border">
+        <div class="flex items-center justify-between px-4 py-2 border-b bg-gray-50">
+            <h3 class="font-semibold text-sm">📄 PDF 原文</h3>
+            <div class="flex gap-2 text-xs">
+                <button onclick="pdfPrevPage()" class="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300">←</button>
+                <span><span id="page-num">1</span> / <span id="page-count">-</span></span>
+                <button onclick="pdfNextPage()" class="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300">→</button>
+            </div>
+        </div>
+        {% if pdf_url %}
+        <div class="pdf-container">
+            <canvas id="pdf-canvas"></canvas>
+        </div>
+        {% else %}
+        <div class="flex items-center justify-center h-64 text-gray-400">
+            <p>此论文无 PDF 文件可供预览。</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Right: Summary -->
+    <div class="split-right bg-white rounded-lg border">
+        <div class="px-4 py-2 border-b bg-gray-50">
+            <div class="flex items-center justify-between">
+                <h3 class="font-semibold text-sm">📝 AI 分析总结</h3>
+                <div class="flex items-center gap-2">
+                    <span id="hl-indicator" class="hidden highlight-mode-indicator">🖍 高亮模式</span>
+                    <button id="hl-clear" onclick="clearHighlights()"
+                            class="text-xs px-2 py-0.5 rounded border text-gray-400 hover:text-red-600 hover:border-red-300 transition-colors hidden">
+                        清除高亮
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="p-4 overflow-y-auto text-sm leading-relaxed">
+            {% if summary_content %}
+            <div class="prose prose-sm max-w-none ai-content-mount" id="summary-content"></div>
+            <script>window.__AIContentData = window.__AIContentData || {}; window.__AIContentData['summary-content'] = {{ summary_content | tojson }};</script>
+            <script>
+                // Ensure restoreHighlights runs when React populates the content
+                (function(){
+                    var el = document.getElementById('summary-content');
+                    if (!el) return;
+                    // If restoreHighlights is already defined, try now (content might already be there)
+                    if (typeof restoreHighlights === 'function') setTimeout(restoreHighlights, 200);
+                    // Watch for React rendering
+                    var obs = new MutationObserver(function() {
+                        obs.disconnect();
+                        if (typeof restoreHighlights === 'function') {
+                            setTimeout(restoreHighlights, 50);
+                        }
+                    });
+                    obs.observe(el, { childList: true, subtree: true });
+                })();
+            </script>
+            {% else %}
+            <p class="text-gray-400 text-center py-10">尚未生成总结。可返回 session 页点击「重新分析」。</p>
+            {% endif %}
+            {% if debug_info %}
+            <div class="mt-4 text-xs text-gray-500 bg-gray-50 p-2 rounded border">
+                <p class="font-medium mb-1">🔍 诊断:</p>
+                <pre class="whitespace-pre-wrap">{{ debug_info }}</pre>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Notes -->
+<div class="bg-white rounded-lg border mt-4">
+    <div class="flex items-center justify-between px-4 py-2 border-b bg-yellow-50">
+        <h3 class="font-semibold text-sm">✏️ 个人笔记
+            {% if note_updated %}<span class="text-xs text-gray-400 font-normal ml-2">更新于 {{ note_updated[:16] }}</span>{% endif %}
+        </h3>
+    </div>
+    <form method="post" action="/papers/{{ paper.id }}/note" class="p-4">
+        <textarea name="content" rows="6" placeholder="在这里写你对这篇论文的想法、灵感、待办..."
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-yellow-300 focus:border-yellow-500 outline-none resize-y">{{ note_content }}</textarea>
+        <div class="flex justify-between items-center mt-2">
+            <span class="text-xs text-gray-400">支持 Markdown</span>
+            <button type="submit" class="bg-yellow-500 text-white px-4 py-1.5 rounded-lg hover:bg-yellow-600 text-sm">
+                保存笔记
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ── Text Highlighting (Cmd+H) ─────────────────────────────────── */
+const HL_KEY = 'paper_highlights_{{ paper.id }}';
+let hlMode = false;
+
+function loadHighlights() {
+    try { return JSON.parse(localStorage.getItem(HL_KEY) || '[]'); } catch(e) { return []; }
+}
+function saveHighlights(h) { localStorage.setItem(HL_KEY, JSON.stringify(h)); }
+
+function restoreHighlights() {
+    const container = document.getElementById('summary-content');
+    if (!container) return;
+    const highlights = loadHighlights();
+    if (highlights.length === 0) return;
+    highlights.sort((a, b) => b.text.length - a.text.length);
+
+    for (const h of highlights) {
+        const fullText = container.textContent;
+        // Try stored offset first (more reliable than text search)
+        let idx = -1;
+        if (h.offset !== undefined) {
+            if (fullText.substring(h.offset, h.offset + h.text.length) === h.text) {
+                idx = h.offset;
+            }
+        }
+        if (idx === -1) {
+            idx = fullText.indexOf(h.text);
+        }
+        if (idx === -1) continue;
+
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+        let pos = 0, startNode = null, startOffset = 0;
+        let endNode = null, endOffset = 0;
+        let node;
+        while ((node = walker.nextNode())) {
+            const len = node.textContent.length;
+            if (startNode === null && pos + len > idx) {
+                startNode = node;
+                startOffset = idx - pos;
+            }
+            if (startNode !== null) {
+                const end = pos + len;
+                if (end >= idx + h.text.length) {
+                    endNode = node;
+                    endOffset = (idx + h.text.length) - pos;
+                    break;
+                }
+            }
+            pos += len;
+        }
+        if (!startNode || !endNode) continue;
+
+        const range = document.createRange();
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset);
+
+        const mark = document.createElement('mark');
+        mark.className = 'hl-mark';
+        mark.dataset.hlId = h.id;
+        mark.title = '点击移除高亮';
+        mark.addEventListener('click', function(e) { e.stopPropagation(); removeHighlight(this.dataset.hlId); });
+
+        try {
+            range.surroundContents(mark);
+        } catch(e) {
+            const fragment = range.extractContents();
+            mark.appendChild(fragment);
+            range.insertNode(mark);
+        }
+    }
+    document.getElementById('hl-clear')?.classList.remove('hidden');
+}
+
+function getSelectedText() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim()) return null;
+    const container = document.getElementById('summary-content');
+    if (!container || !container.contains(sel.anchorNode) || !container.contains(sel.focusNode)) return null;
+    return sel.toString().trim();
+}
+
+function addHighlight(text) {
+    if (!text || text.length < 2) return;
+    const container = document.getElementById('summary-content');
+    if (!container) return;
+    const highlights = loadHighlights();
+    if (highlights.some(h => h.text === text)) return;
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+
+    // Store character offset for reliable restore (text is fallback)
+    const fullText = container.textContent;
+    const offset = fullText.indexOf(text);
+
+    highlights.push({ text, id, offset: offset >= 0 ? offset : undefined });
+    saveHighlights(highlights);
+
+    // Wrap the current selection range (still active when addHighlight is called)
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && container.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0);
+        const mark = document.createElement('mark');
+        mark.className = 'hl-mark';
+        mark.dataset.hlId = id;
+        mark.title = '点击移除高亮';
+        mark.addEventListener('click', function(e) { e.stopPropagation(); removeHighlight(this.dataset.hlId); });
+        try { range.surroundContents(mark); } catch(e) {
+            const fragment = range.extractContents();
+            mark.appendChild(fragment);
+            range.insertNode(mark);
+        }
+    }
+    document.getElementById('hl-clear')?.classList.remove('hidden');
+}
+
+function removeHighlight(id) {
+    document.querySelectorAll(`.hl-mark[data-hl-id="${id}"]`).forEach(el => {
+        el.classList.add('hl-removing');
+        const parent = el.parentNode;
+        while (el.firstChild) parent.insertBefore(el.firstChild, el);
+        parent.removeChild(el);
+        parent.normalize();
+    });
+    let highlights = loadHighlights().filter(h => h.id !== id);
+    saveHighlights(highlights);
+    if (highlights.length === 0) document.getElementById('hl-clear')?.classList.add('hidden');
+}
+
+function clearHighlights() {
+    if (!confirm('清除本条论文的全部高亮标注？')) return;
+    document.querySelectorAll('#summary-content .hl-mark').forEach(el => {
+        const parent = el.parentNode;
+        while (el.firstChild) parent.insertBefore(el.firstChild, el);
+        parent.removeChild(el);
+        parent.normalize();
+    });
+    saveHighlights([]);
+    document.getElementById('hl-clear')?.classList.add('hidden');
+    hlMode = false;
+    document.getElementById('hl-indicator')?.classList.add('hidden');
+    document.getElementById('summary-content')?.classList.remove('highlight-mode');
+}
+
+/* ── Restore highlights after React mount ───────────────────────── */
+document.addEventListener('ai-content-mounted', function onMount() {
+    if (!document.querySelector('.ai-content-mount#summary-content')) return;
+    restoreHighlights();
+});
+
+/* ── Keyboard shortcut ──────────────────────────────────────────── */
+document.addEventListener('keydown', function(e) {
+    if (!e.metaKey && !e.ctrlKey) return;
+    if (e.key.toLowerCase() !== 'h') return;
+    e.preventDefault();
+
+    const container = document.getElementById('summary-content');
+    if (!container) return;
+
+    const selText = getSelectedText();
+    if (selText) {
+        addHighlight(selText);
+        try { window.getSelection()?.removeAllRanges(); } catch(ex) {}
+        return;
+    }
+
+    hlMode = !hlMode;
+    const indicator = document.getElementById('hl-indicator');
+    if (hlMode) {
+        container.classList.add('highlight-mode');
+        indicator?.classList.remove('hidden');
+    } else {
+        container.classList.remove('highlight-mode');
+        indicator?.classList.add('hidden');
+    }
+});
+</script>
+
+{% if pdf_url %}
+<script type="module">
+(async () => {
+    try {
+        const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+
+        const canvas = document.getElementById('pdf-canvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        let pdfDoc = null, pageNum = 1, renderTask = null;
+
+        const doc = await pdfjsLib.getDocument('{{ pdf_url }}').promise;
+        pdfDoc = doc;
+        document.getElementById('page-count').textContent = doc.numPages;
+
+        async function render(num) {
+            if (renderTask) { try { await renderTask.cancel(); } catch(e) {} renderTask = null; }
+            const page = await pdfDoc.getPage(num);
+            const vp = page.getViewport({ scale: 1.5, rotation: page.rotate || 0 });
+            canvas.height = vp.height;
+            canvas.width = vp.width;
+            renderTask = page.render({ canvasContext: ctx, viewport: vp });
+            await renderTask.promise;
+            renderTask = null;
+            document.getElementById('page-num').textContent = num;
+            pageNum = num;
+        }
+
+        window.pdfPrevPage = () => { if (pageNum > 1) render(pageNum - 1); };
+        window.pdfNextPage = () => { if (pageNum < pdfDoc.numPages) render(pageNum + 1); };
+
+        await render(1);
+    } catch (err) {
+        console.error('PDF error:', err);
+        var c = document.getElementById('pdf-canvas');
+        if (c) c.insertAdjacentHTML('afterend', '<p class=\"text-red-500 text-sm p-4\">PDF 加载失败: ' + (err.message || err) + '</p>');
+    }
+})();
+</script>
+{% endif %}
+{% endblock %}

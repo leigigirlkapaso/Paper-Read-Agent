@@ -1,0 +1,275 @@
+# ── 0. 服务器配置 ──────────────────────────────────────────
+server:
+  host: "0.0.0.0"
+  port: 8000
+  secret_key: ""   # 留空则首次启动自动生成
+
+# ============================================================
+#  PaperReadAgent 总配置文件
+#  所有参数集中在此，运行前请先填写 llm 和 research 两节
+# ============================================================
+
+# ── 0. 核心层配置（模块化平台共享）───────────────────────────
+core:
+  llm:
+    # 默认沿用顶层 llm: 块，可在此覆盖
+    api_base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-YOUR_API_KEY_HERE"
+    model_name: "deepseek-v4-pro"
+    temperature: 0.3
+    embedding_model: "BAAI/bge-large-zh-v1.5"
+
+  knowledge:
+    embedding_model: "BAAI/bge-large-zh-v1.5"
+    embedding_provider: "local"
+
+  scheduler:
+    timezone: "Asia/Shanghai"
+
+  voice:
+    api_base_url: "https://api.gpt.ge/v1"
+    api_key: "sk-YOUR_API_KEY_HERE"
+    stt_model: "whisper-large-v3"
+    tts_model: "gemini-2.5-pro-preview-tts"
+    tts_voice: "achird"
+    tts_speed: 1.0
+    stt_language: "zh"
+
+# ── 1. 大语言模型配置 ──────────────────────────────────────
+llm:
+  # api_base_url: "https://api.gpt.ge/v1/"   # 兼容 OpenAI 格式的任意接口
+  api_base_url: "https://api.deepseek.com/v1"
+  api_key: "sk-YOUR_API_KEY_HERE"                            # 你的 API Key
+  model_name: "deepseek-v4-pro"                         # 模型名称
+  temperature: 0.3
+  # max_tokens 不在此处设置，由 AGENT2 根据输入长度动态控制
+
+# ── 2. 研究构想 & 检索参数 ──────────────────────────────────
+research:
+  topic: |
+    在多方数据协作与云端机器学习服务日益普及的当下，打破数据孤岛往往伴随着极大的隐私泄露风险。
+    传统隐私保护方案存在显著瓶颈：纯多方安全计算（MPC）在面对大规模数据集或复杂非线性计算时，会产生令人难以承受的计算延迟与通信开销；
+    而纯差分隐私（DP）为了抵御重构攻击和推断攻击，往往需要在高维数据中注入大量噪声，严重破坏了数据的可用性与最终计算结果的精度。
+    本构想提出一种突破单一计算场景限制的轻量级 MPC 与 DP 协同优化架构，面向广义的多方联合数据分析、模型训练与云端安全推理任务，
+    旨在实现高安全性、低系统开销与高数据效用的深度平衡。核心研究思路包括：算子级解耦的轻量化协同协议：摒弃对全链路计算进行重型密码学操作的传统思路，
+    将复杂计算图进行解耦。对于线性操作（如加法、聚合），采用极低开销的加法秘密共享（Additive Secret Sharing）；
+    对于高消耗的非线性操作（如激活函数、排序），则探索利用 DP 机制产生的扰动边界来进行安全近似计算，
+    从而从根本上规避复杂的密码学交互，打破通信瓶颈。计算感知的混合扰动机制：在数据接入端或密文计算过程的特定瓶颈节点，
+    引入满足严格 $\epsilon$-DP 的自适应噪声。由于底层协议已有轻量级 MPC 掩盖了中间计算状态，DP 机制仅需专注于防范最终输出结果的逆向推断风险。
+    这种“MPC 保过程，DP 保结果”的双重防御，能够大幅降低所需的全局噪声注入量，显著提升模型或统计结果的精度。
+    性能与精度的动态调度引擎：针对实际落地的异构环境，设计一套自适应的资源分配策略。
+    系统可根据当前网络带宽、参与方算力限制以及具体任务对精度的容忍度，在“高密码学强度（重 MPC）”与“高统计扰动（重 DP）”之间自动调节权重，寻找通信开销与输出效用的帕累托最优（Pareto Optimal）执行路径。
+    本研究期望通过密码学与统计学隐私技术的底层深度融合，为医疗数据安全共享、金融联合风控以及大规模云端 AI 模型推理等广泛应用，提供具备高度可扩展性与严格隐私理论保障的新一代通用计算范式.  
+
+
+  max_search_results: 200      # arxiv 每条 query 返回的候选文献数量上限（<=100 避免分页）
+  min_search_results: 200      # 期望的最小候选总量；不足时自动启用 fallback query 补充
+  max_queries: 8               # 最多执行的 query 数量（防止请求过多触发 arxiv 限流）
+  query_delay: 8               # 每条 query 之间的等待秒数（防限流，建议 6~10）
+  max_download_papers: 200     # 经 AGENT1 筛选后，最多下载的文献数量
+  relevance_threshold: 0.7    # 相关性分数阈值（0~1），低于此值的文献被过滤
+  search_batch_size: 5       # AGENT1 筛选时每批处理的文献数量（控制 token）
+  sort_by: "date"             # 检索结果排序方式：date=按发表时间降序（最新优先）| relevance=按相关性
+  min_year: 2024              # 过滤掉早于此年份的论文（设为 0 则不过滤）
+
+# ── 3. 并发参数 ─────────────────────────────────────────────
+concurrency:
+  max_concurrent: 100         # AGENT2 最大并发数
+
+# ── 4. 多平台检索来源配置 ────────────────────────────────────
+# 可自由开关各平台；arxiv 默认开启，其余默认关闭（避免初次运行时间过长）
+sources:
+  arxiv: true                  # arxiv 检索（免费，无需 API Key）
+
+  semantic_scholar: false       # Semantic Scholar（覆盖 NeurIPS/ICML/CVPR 等所有顶会）
+  s2_api_key: ""               # 可选；免费申请：https://www.semanticscholar.org/product/api
+  s2_max_per_query: 100        # 每条 query 最多取 100 篇
+  s2_query_delay: 3.0          # 每条 query 间隔秒数（免费限速约 1 req/s）
+
+  papers_with_code: false       # Papers With Code（ML 专属，含代码链接）
+  pwc_max_per_query: 100       # 每条 query 最多取 100 篇
+  pwc_query_delay: 2.0         # 每条 query 间隔秒数
+
+  openalex: true               # OpenAlex（2 亿+ 文献，完全免费，适合兜底扩大检索面）
+  oa_max_per_query: 100        # 每条 query 最多取 100 篇
+  oa_query_delay: 2.0          # 每条 query 间隔秒数
+
+  dblp: false                  # DBLP（CS 顶会/期刊全覆盖，免费，无需 API Key）
+  dblp_max_per_query: 100      # 每条 query 最多取 100 篇（最大 1000）
+  dblp_query_delay: 2.0        # 每条 query 间隔秒数
+
+  # 会议感知搜索：留空则搜索全部会议
+  # 格式: [{"name": "CCS", "aliases": ["ACM CCS"]}, ...] 或 ["CCS", ...]
+  dblp_search_years: 3                  # 回溯年数
+  dblp_search_all: false                # 同时检索全部会议
+  dblp_conferences:
+    # ── 安全四大 ──
+    - name: "IEEE Symposium on Security and Privacy"
+      aliases: ["IEEE S&P", "IEEE SP", "S&P"]
+    - name: "CCS"
+      aliases: ["ACM CCS", "Computer and Communications Security"]
+    - name: "USENIX Security"
+      aliases: ["USENIX Security Symposium"]
+    - name: "NDSS"
+      aliases: ["Network and Distributed System Security"]
+
+    # ── 安全四小（密码学/隐私方向）──
+    - name: "PETS"
+      aliases: ["Privacy Enhancing Technologies", "PoPETs", "Proceedings on Privacy Enhancing Technologies"]
+    - name: "CSF"
+      aliases: ["Computer Security Foundations", "IEEE Computer Security Foundations Symposium"]
+    - name: "ESORICS"
+      aliases: ["European Symposium on Research in Computer Security"]
+    - name: "ACSAC"
+      aliases: ["Annual Computer Security Applications Conference"]
+
+    # ── 数据/系统顶会 ──
+    - name: "SIGMOD"
+      aliases: ["SIGMOD Conference", "ACM SIGMOD"]
+    - name: "VLDB"
+      aliases: ["International Conference on Very Large Data Bases", "Proceedings of the VLDB Endowment"]
+    - name: "KDD"
+      aliases: ["ACM SIGKDD", "Knowledge Discovery and Data Mining"]
+    - name: "ICDE"
+      aliases: ["International Conference on Data Engineering", "IEEE ICDE"]
+
+    # ── 安全/隐私顶刊 ──
+    - name: "ACM Trans. Priv. Secur."
+      aliases: ["ACM Transactions on Privacy and Security", "ACM TOPS", "TISSEC", "ACM Trans. Inf. Syst. Secur."]
+    - name: "IEEE Trans. Inf. Forensics Secur."
+      aliases: ["IEEE Transactions on Information Forensics and Security", "IEEE TIFS", "TIFS"]
+    - name: "IEEE Trans. Dependable Secur. Comput."
+      aliases: ["IEEE Transactions on Dependable and Secure Computing", "IEEE TDSC", "TDSC"]
+    - name: "Proc. Priv. Enhancing Technol."
+      aliases: ["Proceedings on Privacy Enhancing Technologies", "PoPETs"]
+    - name: "J. Comput. Secur."
+      aliases: ["Journal of Computer Security"]
+
+    # ── 数据/知识工程顶刊 ──
+    - name: "IEEE Trans. Knowl. Data Eng."
+      aliases: ["IEEE Transactions on Knowledge and Data Engineering", "IEEE TKDE", "TKDE"]
+
+# ── 5. 多源下载配置 ────────────────────────────────────────
+downloader:
+  # Unpaywall: 需要提供邮箱以获得免费 API 访问
+  # 免费申请：https://unpaywall.org/products/api
+  unpaywall_email: ""              # 留空则跳过 Unpaywall
+
+  # Sci-Hub: 最后兜底方案，默认关闭
+  enable_scihub: false
+  enable_institutional: false  # 机构VPN直连下载（DOI → IEEE/ACM 等）
+  scihub_mirrors:
+    - "https://sci-hub.se"
+    - "https://sci-hub.st"
+    - "https://sci-hub.ru"
+
+# ── 6. PDF 解析参数 ──────────────────────────────────────────
+pdf:
+  max_chars: 80000            # 送入 LLM 的最大字符数（超出则截断保留摘要+引言+结论）
+
+# ── 7. AGENT2 总结 Prompt ────────────────────────────────────
+# 你可以自由修改以下 prompt，系统会将它拼接到每篇论文内容前发给大模型
+# summary_prompt: |
+#   你是一位资深的科研助理，请对下面提供的论文内容进行结构化分析。
+#   严格按照以下 6 个维度输出，使用 Markdown 标题层级，用中文回答，每个维度不少于 300 字，其中主要方法不少于 800 字，与我研究的关联不少于 1000 字：
+#
+#   ## 研究问题
+#   （正文……）
+#
+#   每个 `##` 段落后用 `---` 分隔。
+#   数学公式用 `$...$` / `$$...$$`。
+#   不要输出前言或结语。
+
+summary_prompt: |
+  你是一位资深隐私计算领域的科研助理，精通差分隐私（DP/LDP）和多方安全计算（MPC）等前沿方向。擅长”文献精读 + 技术对齐”，尤其擅长从理论推导与系统评估中提炼可迁移的算法组件与评估范式。请对下面提供的论文内容进行结构化分析，并重点阐释该论文如何帮助我推进当前的研究工作。
+
+  ## 输出格式要求
+
+  ### 总则
+  - 严格按以下 7 个维度输出。
+  - 使用 Markdown 标题层级：`##` 维度名、`###` 子维度名。
+  - 用中文撰写正文，专业术语首次出现后可保留英文原名。
+  - 每个 `##` 段落之间用一个 `---` 分隔线隔开，确保视觉层次分明。
+  - 不要输出任何前言、结语或”综上所述”类总结句。
+  - 数学公式用单个 `$` 内联、双 `$$` 单行显示。
+  - 需要列举时使用 `-` 无序列表或 `1.` 有序列表，**不要**把列举内容挤成一段。
+
+  ### 各维度要求
+
+  ## 研究问题与现有局限
+  （不少于 300 字）
+
+  **研究问题**：该论文试图解决什么核心的隐私与效用冲突问题？研究动机是什么？
+
+  **现有局限**：前人工作在解决该问题时存在哪些不足（如计算开销过大、特定攻击下防御失效、去中心化架构下的通信瓶颈、图数据多跳聚合中的隐私泄露等）？
+
+  ---
+
+  ## 系统模型与威胁模型
+  （不少于 400 字）
+
+  **系统模型**：描述论文所依赖的系统架构设计，包括信任边界的划分、网络拓扑假设、参与实体的角色分配。
+
+  **威胁模型**：详细说明假设的攻击者能力范围（如：半诚实服务器、恶意参与节点、具备背景知识的白盒/黑盒攻击者），以及采用的隐私定义标准（如 $\epsilon$-DP 及其变体或密码学原语）。
+
+  ---
+
+  ## 方案概述与技术挑战
+  （不少于 800 字）
+
+  **方案概述**：从全局视角描述所提方案的设计蓝图，详细拆解整个方案的运行阶段和涉及的核心组件的交互流程。
+
+  **技术挑战与核心思想**：该方案在设计与实现过程中攻克了哪些具体的技术挑战？针对每一个挑战，作者提出了什么核心思想和关键算法模块（如局部扰动机制、安全聚合协议、掩码策略等）来应对？
+
+  ---
+
+  ## 核心贡献
+  （不少于 300 字）
+
+  归纳论文最有价值的技术创新与学术贡献。请严格区分以下三类：
+  - **理论创新**：如更紧凑的误差界限、更优的收敛保证等
+  - **系统创新**：如降低通信轮数、减少计算开销的协议设计等
+  - **实验创新**：如提出新的基准数据集、攻击范式或评估指标等
+
+  ---
+
+  ## 关键实验结果
+  （不少于 600 字）
+
+  总结支撑论文主张的关键定量结果：
+  - **效用评估**：不同隐私预算下的模型准确率与收敛速度权衡
+  - **系统开销**：计算复杂度、通信负载与存储消耗的定量对比
+  - **攻防对抗**（若涉及）：防御效果与超参数敏感性分析
+
+  ---
+
+  ## 论文局限性
+  （不少于 300 字）
+
+  分析该工作的理论假设边界（如是否强依赖独立同分布假设）、潜在的防御失效或效率骤降场景（如极端稀疏数据），以及评估视角的不足和作者指出的未来工作。
+
+  ---
+
+  ## 与我研究的深度整合
+  （核心迁移分析，不少于 1200 字）
+
+  该维度是本次分析的重中之重。请将论文的核心机制作为线索，与我的研究构想进行深度对齐。务必包含以下四个子维度，使用 `###` 标题：
+
+  ### 1. 理论与机制层面的复用
+  该方案的哪些阶段、组件或数学推导可跨上下文引入到我的算法设计中（例如借鉴其解决某项技术挑战的核心思想）？
+
+  ### 2. 系统评估范式的迁移
+  给出具体的实验迁移方案，包括可复用的数据集特征、系统开销对比的量化指标体系，以及合理的基线选择策略。
+
+  ### 3. 瓶颈突破与机制改良
+  结合我可能遇到的研究场景指出直接照搬该系统模型可能面临的”水土不服”（如拓扑结构导致噪声级联放大），并提供具体的改良或混合架构思路。
+
+  ### 4. 启发性的研究延展
+  主动挖掘论文中隐含的、未充分解决的新问题（例如该机制在大模型或跨域联邦中是否依然有效），并给出”短期可实现的代码/算法组件融合”与”中长期理论框架演进”的具体建议。
+
+  ---
+
+  ## 与我研究的相结合的可能性
+  （不少于 300 字）
+
+  基于以上全部分析，如果我的研究与该论文合作开展，能形成什么新研究问题、新方法或新应用场景？可能的研究合作框架与预期价值是什么？

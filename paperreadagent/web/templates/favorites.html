@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}收藏夹 — PaperReadAgent{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold mb-1">⭐ 收藏夹</h1>
+    <p class="text-sm text-gray-500">共 {{ total }} 篇收藏论文</p>
+</div>
+
+{% if favorites %}
+<div class="paper-grid">
+    {% for p in favorites %}
+    <div class="bg-white rounded-lg border hover:border-yellow-300 hover:shadow-sm transition p-4 relative">
+        <a href="/papers/{{ p.id }}" class="block">
+            <h3 class="font-medium text-sm leading-snug mb-2 line-clamp-2 pr-6">{{ p.title or '(无标题)' }}</h3>
+            {% set authors = p.authors if p.authors is iterable and p.authors is not string else [] %}
+            {% if authors %}
+            <p class="text-xs text-gray-500 mb-2">{{ authors[:3] | join(', ') }}{% if authors|length > 3 %} 等{% endif %}</p>
+            {% endif %}
+            <div class="flex items-center gap-2 mt-2">
+                <span class="text-xs px-1.5 py-0.5 rounded
+                    {% if p.relevance_score >= 0.8 %}bg-green-100 text-green-700
+                    {% elif p.relevance_score >= 0.5 %}bg-yellow-100 text-yellow-700
+                    {% else %}bg-gray-100 text-gray-500{% endif %}">
+                    相关度 {{ '%.2f' % p.relevance_score }}
+                </span>
+                {% if p.project_name %}
+                <span class="text-xs text-gray-400">{{ p.project_name }}</span>
+                {% endif %}
+                {% if p.venue %}
+                <span class="text-xs text-indigo-400">{{ p.venue }}</span>
+                {% endif %}
+            </div>
+            {% if p.favorited_at %}
+            <div class="text-xs text-gray-400 mt-2">收藏于 {{ p.favorited_at[:10] }}</div>
+            {% endif %}
+        </a>
+        <button class="absolute top-3 right-3 text-xl text-yellow-500 hover:text-yellow-600 transition-colors"
+                hx-post="/papers/{{ p.id }}/fav"
+                hx-swap="outerHTML"
+                title="取消收藏">★</button>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-20 text-gray-400">
+    <p class="text-5xl mb-4">⭐</p>
+    <p>还没有收藏任何论文。</p>
+    <p class="text-sm mt-2">在论文详情页点击 ☆ 即可收藏。</p>
+</div>
+{% endif %}
+{% endblock %}

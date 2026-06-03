@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}PaperReadAgent{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script defer src="/static/ai-content.js?v=2"></script>
+    <link rel="stylesheet" href="/static/css/app.css">
+    {{ request.state.core_head_inject | default('') | safe }}
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b border-gray-200 desktop-only">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="/projects/" class="text-xl font-bold text-indigo-600 hover:text-indigo-800">
+                📚 PaperReadAgent
+            </a>
+            <div class="flex items-center gap-4 text-sm">
+                <a href="/projects/" class="text-gray-600 hover:text-indigo-600">项目</a>
+                <a href="/papers/fav" class="text-gray-600 hover:text-indigo-600">⭐ 收藏</a>
+                <a href="/papers/notes" class="text-gray-600 hover:text-indigo-600">笔记</a>
+                <a href="/papers/search" class="text-gray-600 hover:text-indigo-600">检索</a>
+                <a href="/papers/graph" class="text-gray-600 hover:text-indigo-600">关系图</a>
+                <a href="/ideator/" class="text-gray-600 hover:text-indigo-600">火花</a>
+                <!-- Thinker toggle -->
+                <button id="thinker-nav-toggle"
+                        class="text-lg transition-colors {% if request.state.thinker_enabled %}text-indigo-500 hover:text-indigo-400{% else %}text-gray-300 hover:text-gray-400{% endif %}"
+                        hx-post="/thinker/api/toggle"
+                        hx-swap="outerHTML"
+                        hx-target="#thinker-nav-toggle"
+                        title="{% if request.state.thinker_enabled %}关闭小思{% else %}开启小思{% endif %}">
+                    {% if request.state.thinker_enabled %}🤖{% else %}‍💤{% endif %}
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Flash Messages -->
+    {% if messages %}
+    <div class="max-w-7xl mx-auto px-4 mt-4">
+        {% for msg in messages %}
+        <div class="p-3 rounded-lg text-sm mb-2
+            {% if msg.type == 'error' %}bg-red-100 text-red-800
+            {% elif msg.type == 'success' %}bg-green-100 text-green-800
+            {% else %}bg-blue-100 text-blue-800{% endif %}">
+            {{ msg.text }}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Content -->
+    <main class="max-w-[96vw] mx-auto px-4 py-6">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Mobile bottom navigation -->
+    {% include "mobile_nav.html" %}
+
+    {{ request.state.core_body_end_inject | default('') | safe }}
+    {{ request.state.core_scripts_inject | default('') | safe }}
+    {% block scripts %}{% endblock %}
+</body>
+</html>

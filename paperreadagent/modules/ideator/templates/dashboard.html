@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ideator — 研究火花</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="/ideator/static/ideator.css">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white shadow-sm border-b border-gray-200 mb-6">
+        <div class="max-w-5xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-3">
+                <a href="/projects/" class="text-gray-400 hover:text-indigo-600 text-sm">&larr; 返回</a>
+                <span class="text-xl font-bold text-indigo-600">💡 研究火花</span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <select id="filter-type" class="text-sm border rounded px-2 py-1" onchange="loadSparks()">
+                    <option value="">全部类型</option>
+                    <option value="cross_project">跨项目</option>
+                    <option value="cross_layer">跨层</option>
+                    <option value="contradiction">矛盾</option>
+                    <option value="random">随机</option>
+                    <option value="timeline">时间线</option>
+                </select>
+                <select id="filter-review-status" class="text-sm border rounded px-2 py-1" onchange="loadSparks()">
+                    <option value="">全部状态</option>
+                    <option value="pending">待审查</option>
+                    <option value="passed">已通过</option>
+                    <option value="revised">已修正</option>
+                    <option value="rejected">未通过</option>
+                    <option value="escalated">已仲裁</option>
+                    <option value="flagged">已标记</option>
+                </select>
+                <button onclick="viewRuns()" class="text-sm border border-gray-300 text-gray-600 px-3 py-1 rounded hover:bg-gray-100">
+                    运行记录
+                </button>
+                <button onclick="viewWeights()" class="text-sm border border-gray-300 text-gray-600 px-3 py-1 rounded hover:bg-gray-100">
+                    召回权重
+                </button>
+                <button onclick="triggerMine()" class="text-sm bg-indigo-600 text-white px-4 py-1 rounded hover:bg-indigo-700">
+                    全量挖掘
+                </button>
+                <button onclick="openDirectRoundtable()" class="text-sm bg-purple-600 text-white px-4 py-1 rounded hover:bg-purple-700">
+                    直接发起圆桌
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-5xl mx-auto px-4 pb-20" id="spark-list">
+        <div class="text-center text-gray-400 py-12">加载中...</div>
+    </main>
+
+    <script src="/ideator/static/ideator.js?v=2"></script>
+
+    {% if is_mobile %}
+    <nav class="mobile-nav">
+        <a href="/projects/" class="tab-item">
+            <span class="tab-icon">🏠</span><span>首页</span>
+        </a>
+        <a href="/thinker/" class="tab-item">
+            <span class="tab-icon">💬</span><span>Thinker</span>
+        </a>
+        <a href="/ideator/" class="tab-item active">
+            <span class="tab-icon">💡</span><span>Ideator</span>
+        </a>
+        <a href="/settings/" class="tab-item">
+            <span class="tab-icon">⚙</span><span>设置</span>
+        </a>
+    </nav>
+    {% endif %}
+</body>
+</html>

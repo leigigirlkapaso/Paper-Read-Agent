@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}新建调研 — {{ project.name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <a href="/projects/{{ project.id }}" class="text-sm text-gray-500 hover:text-indigo-600">← {{ project.name }}</a>
+    <h1 class="text-2xl font-bold mt-1">新建文献调研</h1>
+</div>
+
+<form method="post" action="/sessions/start/{{ project.id }}"
+      x-data="configForm()" class="space-y-6">
+    <!-- Mode selection -->
+    <div class="bg-white rounded-xl shadow-sm border p-5">
+        <h2 class="font-semibold mb-3">运行模式</h2>
+        <div class="flex gap-4">
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="mode" value="full" checked class="text-indigo-600">
+                <span>完整模式（搜索+下载+分析）</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="mode" value="collect" class="text-indigo-600">
+                <span>仅搜集（搜索+下载）</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="mode" value="analyze" class="text-indigo-600">
+                <span>仅分析（本地PDF）</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="mode" value="incremental" class="text-indigo-600">
+                <span>增量更新（仅新论文）</span>
+            </label>
+        </div>
+        <div class="mt-2 text-xs text-gray-400">
+            <p>复用已有 session：输入 session ID 可直接分析其 papers/ 目录（需配合仅分析模式）</p>
+        </div>
+    </div>
+
+    <!-- Research Topic -->
+    <div class="bg-white rounded-xl shadow-sm border p-5 config-form">
+        <h2 class="font-semibold mb-3">研究构想</h2>
+        <textarea name="topic" x-model="topic" rows="5"
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500 outline-none"
+                  placeholder="用中英文描述你的研究构想、初步摘要或研究问题..."></textarea>
+    </div>
+
+    <!-- Config Options -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-white rounded-xl shadow-sm border p-5 config-form">
+            <h3 class="font-semibold mb-3 text-sm">LLM 配置</h3>
+            <label class="text-xs">API Base URL</label>
+            <input type="text" x-model="api_base_url" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">API Key</label>
+            <input type="password" x-model="api_key" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">Model</label>
+            <input type="text" x-model="model_name" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">Temperature</label>
+            <input type="number" x-model="temperature" step="0.1" min="0" max="2" class="w-full border rounded px-2 py-1 text-sm">
+        </div>
+
+        <div class="bg-white rounded-xl shadow-sm border p-5 config-form">
+            <h3 class="font-semibold mb-3 text-sm">检索参数</h3>
+            <label class="text-xs">每 query 上限</label>
+            <input type="number" x-model="max_search_results" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">最小候选量</label>
+            <input type="number" x-model="min_search_results" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">最大 query 数</label>
+            <input type="number" x-model="max_queries" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">相关性阈值</label>
+            <input type="number" x-model="relevance_threshold" step="0.05" min="0" max="1" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">最早年份</label>
+            <input type="number" x-model="min_year" class="w-full border rounded px-2 py-1 text-sm">
+        </div>
+
+        <div class="bg-white rounded-xl shadow-sm border p-5 config-form">
+            <h3 class="font-semibold mb-3 text-sm">并发 & PDF</h3>
+            <label class="text-xs">最大并发数</label>
+            <input type="number" x-model="max_concurrent" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">PDF 最大字符数</label>
+            <input type="number" x-model="max_chars" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">最多下载篇数</label>
+            <input type="number" x-model="max_download_papers" class="w-full border rounded px-2 py-1 text-sm mb-2">
+            <label class="text-xs">排序方式</label>
+            <select x-model="sort_by" class="w-full border rounded px-2 py-1 text-sm">
+                <option value="date">按时间</option>
+                <option value="relevance">按相关性</option>
+            </select>
+            <label class="flex items-center gap-2 cursor-pointer text-sm mt-3">
+                <input type="checkbox" x-model="enable_institutional" class="text-indigo-600">
+                机构VPN直连下载 (IEEE/ACM)
+            </label>
+        </div>
+    </div>
+
+    <!-- Summary Prompt -->
+    <div class="bg-white rounded-xl shadow-sm border p-5 config-form">
+        <h2 class="font-semibold mb-3">总结 Prompt</h2>
+        <textarea name="summary_prompt" x-model="summary_prompt" rows="6"
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-300 focus:border-indigo-500 outline-none font-mono"></textarea>
+    </div>
+
+    <!-- Source toggles -->
+    <div class="bg-white rounded-xl shadow-sm border p-5">
+        <h2 class="font-semibold mb-3">检索来源</h2>
+        <div class="flex gap-6">
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" x-model="source_arxiv" checked class="text-indigo-600"> arxiv
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" x-model="source_s2" class="text-indigo-600"> Semantic Scholar
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" x-model="source_pwc" class="text-indigo-600"> Papers With Code
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" x-model="source_oa" class="text-indigo-600"> OpenAlex
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" x-model="source_dblp" class="text-indigo-600"> DBLP
+            </label>
+        </div>
+    </div>
+
+    <!-- DBLP Conference Selection (shown when DBLP is checked) -->
+    <div class="bg-white rounded-xl shadow-sm border p-5" x-show="source_dblp" x-transition>
+        <h2 class="font-semibold mb-3">DBLP 会议筛选
+            <span class="text-xs text-gray-400 font-normal ml-2">（留空则检索全部会议）</span>
+        </h2>
+        <div class="flex flex-wrap gap-2">
+            <template x-for="(conf, i) in availableConferences" :key="i">
+                <label class="flex items-center gap-1 px-3 py-1.5 border rounded-full cursor-pointer text-xs
+                              hover:bg-indigo-50 transition"
+                       :class="selectedConferences.includes(conf) ? 'bg-indigo-100 border-indigo-300 text-indigo-700' : 'border-gray-200'">
+                    <input type="checkbox" :value="conf" x-model="selectedConferences"
+                           class="sr-only">
+                    <span x-text="conf"></span>
+                </label>
+            </template>
+        </div>
+        <div class="mt-3 flex items-center gap-4 text-xs text-gray-500">
+            <label class="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" x-model="dblp_search_all" class="text-indigo-600">
+                同时检索全部会议
+            </label>
+            <label class="flex items-center gap-1">
+                回溯年数:
+                <input type="number" x-model="dblp_search_years" min="1" max="10"
+                       class="w-14 border rounded px-1 py-0.5 text-xs">
+            </label>
+        </div>
+    </div>
+
+    <!-- Hidden: assembled YAML -->
+    <input type="hidden" name="config_yaml" :value="assembledYaml()">
+
+    <div class="flex gap-3">
+        <button type="submit"
+                class="bg-indigo-600 text-white px-8 py-3 rounded-lg hover:bg-indigo-700 font-medium">
+            🚀 启动调研
+        </button>
+        <a href="/projects/{{ project.id }}" class="text-gray-500 px-4 py-3 hover:text-gray-700">取消</a>
+    </div>
+</form>
+
+{% block scripts %}
+<script>
+function configForm() {
+    return {
+        topic: {{ default_topic | tojson | safe }},
+        api_base_url: {{ default_api_base_url | tojson | safe }},
+        api_key: {{ default_api_key | tojson | safe }},
+        model_name: {{ default_model_name | tojson | safe }},
+        temperature: {{ default_temperature }},
+        max_search_results: {{ default_max_search_results }},
+        min_search_results: {{ default_min_search_results }},
+        max_queries: {{ default_max_queries }},
+        query_delay: {{ default_query_delay }},
+        relevance_threshold: {{ default_relevance_threshold }},
+        max_download_papers: {{ default_max_download_papers }},
+        min_year: {{ default_min_year }},
+        sort_by: {{ default_sort_by | tojson | safe }},
+        max_concurrent: {{ default_max_concurrent }},
+        max_chars: {{ default_max_chars }},
+        summary_prompt: {{ default_summary_prompt | tojson | safe }},
+        source_arxiv: {{ 'true' if default_source_arxiv else 'false' }},
+        source_s2: {{ 'true' if default_source_s2 else 'false' }},
+        source_pwc: {{ 'true' if default_source_pwc else 'false' }},
+        source_oa: {{ 'true' if default_source_oa else 'false' }},
+        source_dblp: {{ 'true' if default_source_dblp else 'false' }},
+        availableConferences: {{ available_conferences | map(attribute='name') | list | tojson | safe }},
+        availableConferencesFull: {{ available_conferences | tojson | safe }},
+        selectedConferences: {{ default_selected_conferences | tojson | safe }},
+        dblp_search_years: {{ default_dblp_search_years }},
+        dblp_search_all: {{ 'true' if default_dblp_search_all else 'false' }},
+        enable_institutional: {{ 'true' if default_enable_institutional else 'false' }},
+        assembledYaml() {
+            let topic = this.topic.replace(/\n/g, '\n    ');
+            let sp = this.summary_prompt.replace(/\n/g, '\n    ');
+            let confsYaml = '';
+            if (this.selectedConferences.length > 0) {
+                // 构建 name → aliases 查找表
+                let confsMap = {};
+                this.availableConferencesFull.forEach(function(c) { confsMap[c.name] = c.aliases || []; });
+                confsYaml = '  dblp_search_years: ' + this.dblp_search_years + '\n' +
+                           '  dblp_search_all: ' + this.dblp_search_all + '\n' +
+                           '  dblp_conferences:\n' +
+                           this.selectedConferences.map(function(c) {
+                               let aliases = confsMap[c] || [];
+                               return '    - name: ' + JSON.stringify(c) + '\n      aliases: ' + JSON.stringify(aliases);
+                           }).join('\n') + '\n';
+            }
+            return `llm:\n  api_base_url: "${this.api_base_url}"\n  api_key: "${this.api_key}"\n  model_name: "${this.model_name}"\n  temperature: ${this.temperature}\n\nresearch:\n  topic: |\n    ${topic}\n  max_search_results: ${this.max_search_results}\n  min_search_results: ${this.min_search_results}\n  max_queries: ${this.max_queries}\n  query_delay: ${this.query_delay}\n  max_download_papers: ${this.max_download_papers}\n  relevance_threshold: ${this.relevance_threshold}\n  search_batch_size: 10\n  sort_by: "${this.sort_by}"\n  min_year: ${this.min_year}\n\nconcurrency:\n  max_concurrent: ${this.max_concurrent}\n\nsources:\n  arxiv: ${this.source_arxiv}\n  semantic_scholar: ${this.source_s2}\n  papers_with_code: ${this.source_pwc}\n  openalex: ${this.source_oa}\n  dblp: ${this.source_dblp}\n  s2_api_key: ""\n  s2_max_per_query: 100\n  s2_query_delay: 3.0\n  pwc_max_per_query: 100\n  pwc_query_delay: 2.0\n  oa_max_per_query: 100\n  oa_query_delay: 2.0\n  dblp_max_per_query: 100\n  dblp_query_delay: 2.0\n${confsYaml}\n\ndownloader:\n  unpaywall_email: ""\n  enable_scihub: false\n  enable_institutional: ${this.enable_institutional}\n\npdf:\n  max_chars: ${this.max_chars}\n\nsummary_prompt: |\n    ${sp}\n`;
+        }
+    }
+}
+</script>
+{% endblock %}
+{% endblock %}

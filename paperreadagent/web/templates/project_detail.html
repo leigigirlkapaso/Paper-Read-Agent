@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} — PaperReadAgent{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <a href="/projects/" class="text-sm text-gray-500 hover:text-indigo-600">← 所有项目</a>
+        <h1 class="text-2xl font-bold mt-1">{{ project.name }}</h1>
+        {% if project.description %}
+        <p class="text-sm text-gray-500">{{ project.description }}</p>
+        {% endif %}
+    </div>
+    <div class="flex gap-2">
+        <a href="/sessions/new/{{ project.id }}"
+           class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 text-sm">
+            + 新建调研
+        </a>
+        <form method="post" action="/projects/{{ project.id }}/delete"
+              onsubmit="return confirm('确定删除项目「{{ project.name }}」及其所有会话和论文？')">
+            <button type="submit" class="bg-red-100 text-red-600 px-4 py-2 rounded-lg hover:bg-red-200 text-sm">
+                删除
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- Stats -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+    <div class="bg-white rounded-lg border p-4 text-center">
+        <div class="text-2xl font-bold text-indigo-600">{{ stats.total_sessions or 0 }}</div>
+        <div class="text-xs text-gray-500">会话数</div>
+    </div>
+    <div class="bg-white rounded-lg border p-4 text-center">
+        <div class="text-2xl font-bold text-green-600">{{ stats.total_papers or 0 }}</div>
+        <div class="text-xs text-gray-500">论文数</div>
+    </div>
+    <div class="bg-white rounded-lg border p-4 text-center">
+        <div class="text-2xl font-bold text-blue-600">{{ stats.total_summaries or 0 }}</div>
+        <div class="text-xs text-gray-500">总结数</div>
+    </div>
+    <div class="bg-white rounded-lg border p-4 text-center">
+        <div class="text-2xl font-bold text-orange-600">{{ (stats.total_tokens or 0) | int }}</div>
+        <div class="text-xs text-gray-500">Token 用量</div>
+    </div>
+</div>
+
+<!-- Sessions -->
+<h2 class="text-lg font-semibold mb-3">调研会话</h2>
+{% if sessions %}
+<div class="space-y-3">
+    {% for s in sessions %}
+    <a href="/sessions/{{ s.id }}"
+       class="block bg-white rounded-lg border hover:border-indigo-300 hover:shadow-sm transition p-4">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <span class="text-sm font-mono text-gray-400">#{{ s.id }}</span>
+                <span class="font-medium">{{ s.session_dir.split('/')[-1] if s.session_dir else 'Session' }}</span>
+                <span class="text-xs px-1.5 py-0.5 rounded
+                    {% if s.mode == 'full' %}bg-purple-100 text-purple-700
+                    {% elif s.mode == 'collect' %}bg-cyan-100 text-cyan-700
+                    {% else %}bg-teal-100 text-teal-700{% endif %}">
+                    {{ {'full':'完整','collect':'搜集','analyze':'分析'}.get(s.mode, s.mode) }}
+                </span>
+            </div>
+            <div class="flex items-center gap-4 text-sm text-gray-500">
+                <span>{{ s.total_candidates or 0 }} 候选 → {{ s.total_filtered or 0 }} 筛选 → {{ s.total_analyzed or 0 }} 分析</span>
+                <span class="px-2 py-0.5 rounded text-xs
+                    {% if s.status == 'completed' %}bg-green-100 text-green-700
+                    {% elif s.status == 'running' %}bg-yellow-100 text-yellow-700
+                    {% elif s.status == 'failed' %}bg-red-100 text-red-700
+                    {% else %}bg-gray-100 text-gray-500{% endif %}">
+                    {{ s.status }}
+                </span>
+                {% if s.created_at %}
+                <span class="text-xs text-gray-400">{{ s.created_at[:10] }}</span>
+                {% endif %}
+            </div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-gray-400 py-10 text-center">暂无调研会话。</p>
+{% endif %}
+{% endblock %}

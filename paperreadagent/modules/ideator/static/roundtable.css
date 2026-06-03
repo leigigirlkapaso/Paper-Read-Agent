@@ -1,0 +1,59 @@
+/* Roundtable Chat Modal Styles */
+[data-module="ideator"] .rt-msg-user {
+    background: #2563eb;
+    color: #fff;
+    border-radius: 12px 12px 4px 12px;
+    padding: 10px 14px;
+    max-width: 75%;
+    margin-left: auto;
+    font-size: 13px;
+}
+
+[data-module="ideator"] .rt-msg-model {
+    background: #1e293b;
+    border-radius: 4px 12px 12px 12px;
+    padding: 10px 14px;
+    font-size: 13px;
+    color: #e2e8f0;
+}
+
+[data-module="ideator"] .rt-msg-interjection {
+    border-left: 3px solid #ef4444;
+}
+
+[data-module="ideator"] .rt-msg-system {
+    text-align: center;
+    font-size: 11px;
+    color: #94a3b8;
+    background: #334155;
+    padding: 4px 12px;
+    border-radius: 12px;
+    display: inline-block;
+    margin: 4px auto;
+}
+
+[data-module="ideator"] .rt-seat-chip {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+[data-module="ideator"] .rt-seat-chip.active {
+    background: #7c3aed;
+    color: #fff;
+}
+
+[data-module="ideator"] .rt-seat-chip.inactive {
+    background: #334155;
+    color: #94a3b8;
+}
+
+[data-module="ideator"] .rt-status-online { color: #34d399; }
+[data-module="ideator"] .rt-status-warning { color: #fbbf24; }
+[data-module="ideator"] .rt-status-exited { color: #64748b; text-decoration: line-through; }
+
+[data-module="ideator"] .rt-role-gen { color: #60a5fa; }
+[data-module="ideator"] .rt-role-rev { color: #a78bfa; }
+[data-module="ideator"] .rt-role-arb { color: #fbbf24; }

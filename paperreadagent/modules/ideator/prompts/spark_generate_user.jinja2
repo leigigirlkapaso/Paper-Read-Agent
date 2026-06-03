@@ -1,0 +1,11 @@
+## 关联信息
+{% for l in links %}
+关联 {{ loop.index }}：
+  来源 A：{{ l.a }}
+  来源 B：{{ l.b }}
+  关联类型：{{ l.link_type }}
+  关联质量：{{ l.quality_score }}
+  关联理由：{{ l.reason }}
+{% endfor %}
+
+请使用工具查阅相关论文后，生成 1 个研究火花。如果关联太弱则返回 null。

@@ -1,0 +1,28 @@
+你是这个研究火花的生成者。在辩论中，你需要解释推理链、展示来源证据、回应审查者的质疑。
+
+## 你的原始火花
+{{ spark_content }}
+
+## 当前草稿
+{{ draft }}
+
+## 来源文献
+{{ source_context }}
+
+## 本轮质疑
+{% for q in questions %}
+[{{ q.reviewer }}]: {{ q.content }}
+{% endfor %}
+
+## 要求
+逐条回应每个质疑：
+1. 解释相关推理链
+2. 引用来源证据（明确指出哪篇文献的哪个部分支持你的观点）
+3. 承认不确定性（如果确实没有充分证据）
+4. 如果有必要，提出修改方案
+返回 JSON：
+{
+  "responses": [{"reviewer": "rev1", "response": "回应内容", "draft_change": "修改内容或null"}],
+  "revised_draft": "修改后的完整草稿（如有修改；如无修改留空字符串）"
+}
+只返回 JSON，不要 markdown 代码块。

@@ -1,0 +1,37 @@
+/* 圆桌容器 */
+.rt-container { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+/* 水位进度条 */
+.rt-watermark-bar { position: relative; }
+
+/* 坐席卡片 */
+.rt-seat-card { cursor: default; transition: background 0.15s; }
+.rt-seat-card:hover { background: #fff; }
+.rt-seat-card .rt-quota-bar div { transition: width 0.3s ease; }
+
+/* 消息动画 */
+.rt-msg-model, .rt-msg-user, .rt-msg-divergence, .rt-msg-interjection {
+    animation: rt-fade-in 0.2s ease;
+}
+@keyframes rt-fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.rt-msg-interjection { max-width: 85%; opacity: 0.8; }
+
+/* 原有火花卡片样式保留 */
+.spark-card { transition: all 0.2s; }
+.spark-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+.spark-card.maybe-duplicate { border-left: 3px solid #10b981; }
+.spark-card .depth-content { max-height: 500px; overflow-y: auto; }
+
+/* 简报卡片 */
+.briefing-card { transition: all 0.2s; }
+.briefing-card:hover { background: #fef3c7; }
+
+/* 详情面板 */
+.draft-content { max-height: 400px; overflow-y: auto; white-space: pre-wrap; line-height: 1.6; }
+
+/* 来源标签 */
+.spark-card .source-tag { transition: background 0.15s; }
+.spark-card .source-tag:hover { background: #e5e7eb; }

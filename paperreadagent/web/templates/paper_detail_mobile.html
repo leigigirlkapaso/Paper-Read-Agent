@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% block title %}{{ paper.title[:50] or 'Paper' }}{% endblock %}
+
+{% block content %}
+<!-- Mobile Header -->
+<div class="mobile-header">
+    <a href="/sessions/{{ paper.session_id }}" class="back-arrow">&#8592;</a>
+    <span class="title">{{ paper.title or '(无标题)' }}</span>
+</div>
+
+<!-- Meta bar -->
+<div class="px-3 py-2 text-xs text-gray-500 bg-white border-b">
+    {% set authors = paper.authors if paper.authors is iterable and paper.authors is not string else [] %}
+    <span>{{ authors[:3] | join(', ') }}{% if authors|length > 3 %} 等{% endif %}</span>
+    {% if paper.published %}<span class="ml-2">{{ paper.published[:10] }}</span>{% endif %}
+    <span class="ml-2 px-1.5 py-0.5 rounded text-xs
+        {% if paper.relevance_score >= 0.8 %}bg-green-100 text-green-700
+        {% elif paper.relevance_score >= 0.5 %}bg-yellow-100 text-yellow-700
+        {% else %}bg-gray-100 text-gray-500{% endif %}">
+        相关度 {{ '%.2f' % paper.relevance_score }}
+    </span>
+    <button class="ml-auto text-lg transition-colors {% if is_favorited %}text-yellow-500{% else %}text-gray-300 hover:text-yellow-400{% endif %}"
+            hx-post="/papers/{{ paper.id }}/fav"
+            hx-swap="outerHTML"
+            title="{% if is_favorited %}取消收藏{% else %}收藏{% endif %}">
+        {% if is_favorited %}★{% else %}☆{% endif %}
+    </button>
+</div>
+
+<!-- Abstract (collapsible) -->
+{% if paper.abstract %}
+<details class="bg-white border-b px-3 py-2" open>
+    <summary class="text-sm font-semibold text-gray-600">摘要</summary>
+    <p class="text-xs text-gray-500 mt-1 leading-relaxed">{{ paper.abstract[:1500] }}{% if paper.abstract|length > 1500 %}...{% endif %}</p>
+</details>
+{% endif %}
+
+<!-- AI Analysis -->
+<div class="bg-white border-b px-3 py-3">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold">📝 AI 分析总结</h3>
+        <div class="flex items-center gap-1">
+            <span id="hl-indicator" class="hidden highlight-mode-indicator">🖍 高亮模式</span>
+            <button id="hl-clear" onclick="clearHighlights()"
+                    class="text-xs px-2 py-0.5 rounded border text-gray-400 hover:text-red-600 hover:border-red-300 transition-colors hidden">
+                清除
+            </button>
+        </div>
+    </div>
+    {% if summary_content %}
+    <div class="prose prose-sm max-w-none text-sm leading-relaxed ai-content-mount" id="summary-content"></div>
+    <script>window.__AIContentData = window.__AIContentData || {}; window.__AIContentData['summary-content'] = {{ summary_content | tojson }};</script>
+    <script>(function(){var el=document.getElementById('summary-content');if(!el)return;if(typeof restoreHighlights==='function')setTimeout(restoreHighlights,200);var obs=new MutationObserver(function(){obs.disconnect();if(typeof restoreHighlights==='function'){setTimeout(restoreHighlights,50);}});obs.observe(el,{childList:true,subtree:true});})();</script>
+    {% else %}
+    <p class="text-gray-400 text-center py-6 text-sm">尚未生成总结。</p>
+    {% endif %}
+</div>
+
+<!-- Notes -->
+<div class="bg-white px-3 py-3 mobile-page">
+    <h3 class="text-sm font-semibold mb-2">&#x270F;&#xFE0F; 个人笔记</h3>
+    <form method="post" action="/papers/{{ paper.id }}/note">
+        <textarea name="content" rows="5" placeholder="写想法..."
+                  class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-yellow-300 focus:border-yellow-500 outline-none resize-y">{{ note_content }}</textarea>
+        <button type="submit" class="mt-2 w-full bg-yellow-500 text-white py-2.5 rounded-lg hover:bg-yellow-600 text-sm font-medium">
+            保存笔记
+        </button>
+    </form>
+    {% if note_updated %}<p class="text-xs text-gray-400 mt-1">更新于 {{ note_updated[:16] }}</p>{% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ── Text Highlighting (Cmd+H) ─────────────────────────────────── */
+const HL_KEY = 'paper_highlights_{{ paper.id }}';
+let hlMode = false;
+
+function loadHighlights() {
+    try { return JSON.parse(localStorage.getItem(HL_KEY) || '[]'); } catch(e) { return []; }
+}
+function saveHighlights(h) { localStorage.setItem(HL_KEY, JSON.stringify(h)); }
+
+function restoreHighlights() {
+    const container = document.getElementById('summary-content');
+    if (!container) return;
+    const highlights = loadHighlights();
+    if (highlights.length === 0) return;
+    highlights.sort((a, b) => b.text.length - a.text.length);
+
+    for (const h of highlights) {
+        const fullText = container.textContent;
+        let idx = -1;
+        if (h.offset !== undefined) {
+            if (fullText.substring(h.offset, h.offset + h.text.length) === h.text) {
+                idx = h.offset;
+            }
+        }
+        if (idx === -1) { idx = fullText.indexOf(h.text); }
+        if (idx === -1) continue;
+
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+        let pos = 0, startNode = null, startOffset = 0;
+        let endNode = null, endOffset = 0;
+        let node;
+        while ((node = walker.nextNode())) {
+            const len = node.textContent.length;
+            if (startNode === null && pos + len > idx) {
+                startNode = node;
+                startOffset = idx - pos;
+            }
+            if (startNode !== null) {
+                const end = pos + len;
+                if (end >= idx + h.text.length) {
+                    endNode = node;
+                    endOffset = (idx + h.text.length) - pos;
+                    break;
+                }
+            }
+            pos += len;
+        }
+        if (!startNode || !endNode) continue;
+
+        const range = document.createRange();
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset);
+
+        const mark = document.createElement('mark');
+        mark.className = 'hl-mark';
+        mark.dataset.hlId = h.id;
+        mark.title = '点击移除高亮';
+        mark.addEventListener('click', function(e) { e.stopPropagation(); removeHighlight(this.dataset.hlId); });
+
+        try {
+            range.surroundContents(mark);
+        } catch(e) {
+            const fragment = range.extractContents();
+            mark.appendChild(fragment);
+            range.insertNode(mark);
+        }
+    }
+    document.getElementById('hl-clear')?.classList.remove('hidden');
+}
+
+function getSelectedText() {
+
+function getSelectedText() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.toString().trim()) return null;
+    const container = document.getElementById('summary-content');
+    if (!container || !container.contains(sel.anchorNode) || !container.contains(sel.focusNode)) return null;
+    return sel.toString().trim();
+}
+
+function addHighlight(text) {
+    if (!text || text.length < 2) return;
+    const container = document.getElementById('summary-content');
+    if (!container) return;
+    const highlights = loadHighlights();
+    if (highlights.some(h => h.text === text)) return;
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    const fullText = container.textContent;
+    const offset = fullText.indexOf(text);
+    highlights.push({ text, id, offset: offset >= 0 ? offset : undefined });
+    saveHighlights(highlights);
+
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && container.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0);
+        const mark = document.createElement('mark');
+        mark.className = 'hl-mark';
+        mark.dataset.hlId = id;
+        mark.title = '点击移除高亮';
+        mark.addEventListener('click', function(e) { e.stopPropagation(); removeHighlight(this.dataset.hlId); });
+        try { range.surroundContents(mark); } catch(e) {
+            const fragment = range.extractContents();
+            mark.appendChild(fragment);
+            range.insertNode(mark);
+        }
+    }
+    document.getElementById('hl-clear')?.classList.remove('hidden');
+}
+
+function removeHighlight(id) {
+    document.querySelectorAll(`.hl-mark[data-hl-id="${id}"]`).forEach(el => {
+        el.classList.add('hl-removing');
+        const parent = el.parentNode;
+        while (el.firstChild) parent.insertBefore(el.firstChild, el);
+        parent.removeChild(el);
+        parent.normalize();
+    });
+    let highlights = loadHighlights().filter(h => h.id !== id);
+    saveHighlights(highlights);
+    if (highlights.length === 0) document.getElementById('hl-clear')?.classList.add('hidden');
+}
+
+function clearHighlights() {
+    if (!confirm('清除本条论文的全部高亮标注？')) return;
+    document.querySelectorAll('#summary-content .hl-mark').forEach(el => {
+        const parent = el.parentNode;
+        while (el.firstChild) parent.insertBefore(el.firstChild, el);
+        parent.removeChild(el);
+        parent.normalize();
+    });
+    saveHighlights([]);
+    document.getElementById('hl-clear')?.classList.add('hidden');
+    hlMode = false;
+    document.getElementById('hl-indicator')?.classList.add('hidden');
+    document.getElementById('summary-content')?.classList.remove('highlight-mode');
+}
+
+/* ── Restore highlights after React mount ───────────────────────── */
+document.addEventListener('ai-content-mounted', function onMount() {
+    if (!document.querySelector('.ai-content-mount#summary-content')) return;
+    restoreHighlights();
+});
+
+/* ── Keyboard shortcut ──────────────────────────────────────────── */
+document.addEventListener('keydown', function(e) {
+    if (!e.metaKey && !e.ctrlKey) return;
+    if (e.key.toLowerCase() !== 'h') return;
+    e.preventDefault();
+
+    const container = document.getElementById('summary-content');
+    if (!container) return;
+
+    const selText = getSelectedText();
+    if (selText) {
+        addHighlight(selText);
+        try { window.getSelection()?.removeAllRanges(); } catch(ex) {}
+        return;
+    }
+
+    hlMode = !hlMode;
+    const indicator = document.getElementById('hl-indicator');
+    if (hlMode) {
+        container.classList.add('highlight-mode');
+        indicator?.classList.remove('hidden');
+    } else {
+        container.classList.remove('highlight-mode');
+        indicator?.classList.add('hidden');
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,24 @@
+# modules/thinker/config.default.yaml
+# Thinker 模块默认配置，启动时与 config.yaml 合并。
+
+modules:
+  thinker:
+    # 全局开关：Web 端可切换但不会持久化（重启后恢复默认）
+    enabled: true
+
+    # 不活动检测
+    inactivity_timeout_minutes: 10
+    question_frequency_minutes: 15
+    max_pending_questions: 3
+
+    # 对话人格
+    personality: "friend"          # friend | mentor | critic
+    summary_auto_generate: true
+
+    # 语音 — 通过 core.voice (CoreVoice) 统一提供 STT/TTS
+    # 具体 API 配置见 config.yaml → core.voice
+
+    # 深层追问
+    deep_inquiry:
+      socratic_max_rounds: 5
+      feynman_check_complexity: true

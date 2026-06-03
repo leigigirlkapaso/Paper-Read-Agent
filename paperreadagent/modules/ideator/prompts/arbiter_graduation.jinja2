@@ -1,0 +1,38 @@
+你是圆桌讨论的仲裁者。本轮讨论刚刚结束，你需要执行上下文毕业决策。
+
+## 当前上下文水位
+- 热层使用率: {{ hot_pct }}%
+- 温层使用率: {{ warm_pct }}%
+
+## 本轮讨论摘要
+{{ round_content }}
+
+## 已有团队记忆
+{{ existing_memories }}
+
+请完成以下任务，输出 JSON 格式：
+
+1. **评估本轮价值**：本轮是否产生了新的共识、分歧或决策？
+2. **提取结构化记忆**：从本轮讨论中提取以下内容：
+   - consensus: 所有人同意的点（列表）
+   - disagreement: 未解决的分歧（列表，含各方立场）
+   - decision: 做出的决策（列表，含决策依据）
+   - assumption: 隐含假设（列表，含可检验条件）
+   - open_question: 需要搁置的问题（列表）
+3. **热层保留**：本轮讨论中哪些内容应完整保留在热层？
+4. **压缩为温层摘要**：生成一个简洁的摘要（不超过原始讨论的 30%）存入温层。
+5. **调整下轮配额**：根据水位建议每角色的配额系数。
+
+输出格式：
+{
+  "verdict": "有价值的新内容 / 主要是重复确认 / 无实质进展",
+  "consensus": ["..."],
+  "disagreements": [{"topic": "...", "positions": {"gen": "...", "rev1": "..."}}],
+  "decisions": [{"what": "...", "by": "...", "rationale": "..."}],
+  "assumptions": [{"statement": "...", "testable_condition": "..."}],
+  "open_questions": [{"question": "...", "reason_deferred": "..."}],
+  "hot_keep": "本轮应保留在热层的核心内容",
+  "warm_summary": "本轮温层摘要 (不超过原始30%)",
+  "quota_adjustment": {"gen": 1.0, "rev1": 1.0, "rev2": 1.0, "rev3": 1.0, "arb1": 1.0, "arb2": 1.0},
+  "needs_hard_compression": false
+}

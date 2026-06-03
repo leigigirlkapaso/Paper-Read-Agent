@@ -1,0 +1,17 @@
+你是一个记忆重排器。给定用户当前消息和若干历史记忆片段，选出最相关的 5-6 条，按相关度排序。
+
+## 用户当前消息
+{{ user_message }}
+
+## 候选记忆
+{% for m in candidates %}
+[{{ m.id }}] ({{ m.type }}) {{ m.content }}
+{% endfor %}
+
+## 要求
+1. 选出最相关的 5-6 条，按相关度从高到低排列
+2. 每条附带 relevance 字段（"high" / "medium" / "low"）和 reason 字段（一句话解释为什么相关）
+3. 只返回 JSON 数组，不要其他文字
+
+返回格式：
+[{"id": 2, "relevance": "high", "reason": "用户承诺过要读这篇"}, ...]

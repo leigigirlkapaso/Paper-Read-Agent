@@ -78,11 +78,33 @@ class RehearsalEngine:
 
     # ── Status transitions ─────────────────────────────────────
 
-    async def update_status(self, rehearsal_id: int, status: str) -> None:
-        """Update rehearsal phase."""
+    # Valid forward transitions: current → {allowed next states}
+    _TRANSITIONS: dict[str, set[str]] = {
+        "preparing": {"presenting", "qa"},
+        "presenting": {"qa", "preparing"},
+        "qa": {"summarizing", "preparing"},
+        "summarizing": {"completed", "qa"},  # qa fallback on failure
+        "completed": set(),
+    }
+
+    async def update_status(self, rehearsal_id: int, status: str, *, force: bool = False) -> None:
+        """Update rehearsal phase. Enforces valid forward transitions unless force=True."""
         valid = {"preparing", "presenting", "qa", "summarizing", "completed"}
         if status not in valid:
             raise ValueError(f"Invalid status: {status}, valid values: {valid}")
+
+        if not force:
+            row = self._db.conn.execute(
+                "SELECT status FROM thinker_rehearsals WHERE id = ?", (rehearsal_id,)
+            ).fetchone()
+            if row:
+                current = row["status"]
+                allowed = self._TRANSITIONS.get(current, set())
+                if status not in allowed and current != status:
+                    raise ValueError(
+                        f"Invalid transition: {current} → {status}. Allowed: {allowed}"
+                    )
+
         self._db.conn.execute(
             """UPDATE thinker_rehearsals
                SET status = ?, updated_at = datetime('now')
@@ -91,12 +113,24 @@ class RehearsalEngine:
         )
         self._db.conn.commit()
 
+    async def validate_rehearsal(self, rehearsal_id: int) -> dict | None:
+        """Check rehearsal exists and return it, or None if not found.
+        Use before any mutation to prevent silent data loss on invalid IDs."""
+        row = self._db.conn.execute(
+            "SELECT id, status FROM thinker_rehearsals WHERE id = ?", (rehearsal_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
     # ── Transcript accumulation ─────────────────────────────────
 
     async def append_presentation_transcript(
         self, rehearsal_id: int, text: str
     ) -> None:
-        """Append text to the presentation transcript (server-side concatenation)."""
+        """Append text to the presentation transcript (server-side concatenation).
+
+        Uses BEGIN IMMEDIATE to prevent lost updates from concurrent chunk writes.
+        """
+        self._db.conn.execute("BEGIN IMMEDIATE")
         self._db.conn.execute(
             """UPDATE thinker_rehearsals
                SET presentation_transcript = presentation_transcript || ?,
@@ -109,8 +143,12 @@ class RehearsalEngine:
     async def append_qa_turn(
         self, rehearsal_id: int, question: str, answer: str
     ) -> None:
-        """Append one Q&A turn to the Q&A transcript."""
+        """Append one Q&A turn to the Q&A transcript.
+
+        Uses BEGIN IMMEDIATE to prevent lost updates from concurrent writes.
+        """
         entry = f"\n\n[Q · 🤖] {question}\n[A · 🎤] {answer}\n"
+        self._db.conn.execute("BEGIN IMMEDIATE")
         self._db.conn.execute(
             """UPDATE thinker_rehearsals
                SET qa_transcript = qa_transcript || ?,
@@ -240,6 +278,7 @@ class RehearsalEngine:
                     user_prompt=prompt,
                     module="thinker",
                     purpose="rehearsal_summary",
+                    max_tokens=32768,  # 6-dim briefing + corrections + suggestions
                 )
                 result = _parse_summary_json(raw)
                 return result
@@ -261,7 +300,8 @@ class RehearsalEngine:
 # ── Helper functions ─────────────────────────────────────────────
 
 def _parse_summary_json(raw: str) -> dict:
-    """Parse LLM summary JSON, tolerating markdown code block wrapping."""
+    """Parse LLM summary JSON, tolerating markdown code block wrapping.
+    Includes type validation to prevent DB write failures from LLM hallucinations."""
     import re as _re
 
     cleaned = _re.sub(r"```(?:json)?\s*", "", raw).replace("```", "").strip()
@@ -269,10 +309,47 @@ def _parse_summary_json(raw: str) -> dict:
     if match:
         cleaned = match.group(0)
     data = json.loads(cleaned)
+
+    # Validate types — LLMs sometimes hallucinate arrays where strings are expected
+    briefing = data.get("briefing", "")
+    if not isinstance(briefing, str):
+        briefing = str(briefing)  # Convert list/dict to string representation
+
+    corrections = data.get("grammar_corrections", [])
+    if not isinstance(corrections, list):
+        corrections = []
+
+    suggestions = data.get("suggestions", [])
+    if not isinstance(suggestions, list):
+        suggestions = []
+
+    # Ensure each correction/suggestion item is a dict, then normalize fields
+    corrections_raw = [c for c in corrections if isinstance(c, dict)]
+    suggestions_raw = [s for s in suggestions if isinstance(s, dict)]
+
+    corrections = []
+    for c in corrections_raw:
+        lang = str(c.get("language", "")).lower()
+        c["language"] = "en" if lang.startswith("en") else "zh"
+        corrections.append(c)
+
+    suggestions = []
+    for s in suggestions_raw:
+        cat = str(s.get("category", ""))
+        if "结构" in cat:
+            s["category"] = "结构建议"
+        elif "表达" in cat or "delivery" in cat.lower():
+            s["category"] = "表达建议"
+        elif "示范" in cat or "rewrite" in cat.lower() or "优化" in cat:
+            s["category"] = "优化示范"
+        else:
+            s["category"] = "内容建议"
+        suggestions.append(s)
+
     return {
-        "briefing": data.get("briefing", ""),
-        "grammar_corrections": data.get("grammar_corrections", []),
-        "suggestions": data.get("suggestions", []),
+        "briefing": briefing,
+        "grammar_corrections": corrections,
+        "suggestions": suggestions,
     }
 
 
@@ -312,8 +389,8 @@ Output ONLY the question text itself. No prefix, numbering, or explanation."""
 
 
 def _build_summary_prompt_inline(presentation_text: str, qa_text: str) -> str:
-    """Fallback summary prompt builder."""
-    return f"""You are a senior academic presentation coach. Generate a structured summary report based on the following rehearsal transcript.
+    """Fallback summary prompt builder — mirrors rehearsal_summary.jinja2 structure."""
+    return f"""You are a senior academic presentation coach. Generate a thorough, brutally honest evaluation of this rehearsal.
 
 ## Presentation Transcript
 {presentation_text}
@@ -327,28 +404,30 @@ Output strictly as JSON, no extra text:
 
 ```json
 {{
-  "briefing": "Presentation briefing (in Chinese, 300-500 chars): overview, Q&A performance, overall assessment",
+  "briefing": "Multi-section Markdown report in Chinese. Structure (each section starts with ### heading):\n\n### 🔑 核心发现\n3-5 bullet points of the most critical, actionable insights. Prioritize what the presenter is LEAST aware of.\n\n### 📊 内容评估\nLogic flow, argument strength, structure, evidence quality, technical depth vs clarity. Be specific about strengths AND weaknesses.\n\n### 💬 Q&A 表现\nAnswer quality, handling strategy, patterns of strength/weakness, specific improvement directions.\n\n### ✅ 改进清单\nPrioritized checkboxes: - [ ] 🔴 高优先 (must fix), - [ ] 🟡 中优先 (should fix), - [ ] 🟢 低优先 (nice to have). Each item must be specific and testable.",
   "grammar_corrections": [
     {{
       "id": 1,
-      "original": "original sentence",
+      "language": "zh or en",
+      "original": "exact original sentence",
       "corrected": "corrected version",
-      "note": "explanation of the correction"
+      "note": "explanation in Chinese"
     }}
   ],
   "suggestions": [
     {{
       "id": 1,
-      "category": "内容建议|表达建议|优化示范",
-      "issue": "problem description",
-      "suggestion": "specific suggestion",
-      "example": "improved example (empty string if not applicable)"
+      "category": "内容建议|表达建议|结构建议|优化示范",
+      "issue": "problem description in Chinese",
+      "suggestion": "specific actionable suggestion in Chinese",
+      "example": "improved example text, or empty string"
     }}
   ]
 }}
 ```
 
 ## Requirements
-- briefing: Objective evaluation, highlights both strengths and weaknesses
-- grammar_corrections: Only fix clear grammar/word choice errors, not style preferences. Include original quote for each. Empty array if no errors.
-- suggestions: Categorized as 内容建议 (content), 表达建议 (delivery), or 优化示范 (example rewrite). Each must be specific and actionable."""
+- **briefing**: All in Chinese. Be honest — generic praise is useless. Every criticism must include a suggested fix. Separate sections with ### headings. Handle edge cases: if transcript is short, focus on what CAN be evaluated.
+- **grammar_corrections**: Bilingual — fix BOTH Chinese and English errors. Chinese: 搭配不当, 语序, 用词. English: grammar, tense, articles. Each entry MUST include exact original quote. Empty array if no errors.
+- **suggestions**: Four categories — 内容建议 (arguments/evidence/data), 表达建议 (phrasing/clarity/conciseness), 结构建议 (organization/flow/transitions/time allocation), 优化示范 (before/after rewrite). Each must be specific and actionable. Provide concrete examples wherever possible.
+- **Prioritize**: Rank issues by impact. The improvement checklist must guide the presenter on what to fix first."""

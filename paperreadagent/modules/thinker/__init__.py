@@ -16,7 +16,7 @@ from .schema import LATEST_VERSION, MIGRATIONS
 logger = logging.getLogger(__name__)
 
 MODULE_NAME = "thinker"
-MODULE_VERSION = "0.1.0"
+MODULE_VERSION = "0.2.0"
 
 _core: Core | None = None
 
@@ -49,15 +49,6 @@ def register(core: Core) -> ModuleInfo:
     # ── 路由 ──────────────────────────────────────────────────
     from .routes import router
     core.mount_routes(router, prefix="/thinker", tags=["thinker"])
-
-    # ── 前端组件 ─────────────────────────────────────────────
-    core.frontend.register_global_component(
-        name="thinker-panel",
-        template="thinker/panel.html",
-        mount_point="body-end",
-        init_script="thinker/thinker.js",
-        css_file="thinker/thinker.css",
-    )
 
     # ── 后台任务 ─────────────────────────────────────────────
     from .questions import QuestionGenerator

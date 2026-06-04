@@ -3,7 +3,7 @@ modules/thinker/schema.py
 Thinker 模块数据库表 DDL，版本化迁移。
 """
 
-LATEST_VERSION = 2
+LATEST_VERSION = 3
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -130,5 +130,26 @@ DROP TABLE thinker_resolutions;
 ALTER TABLE thinker_resolutions_new RENAME TO thinker_resolutions;
 CREATE INDEX IF NOT EXISTS idx_thinker_resolutions_status
     ON thinker_resolutions(status, created_at);
+""",
+    3: """
+-- 学术报告排练会话
+CREATE TABLE IF NOT EXISTS thinker_rehearsals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'preparing'
+        CHECK(status IN ('preparing','presenting','qa','summarizing','completed')),
+    question_list_source TEXT NOT NULL DEFAULT '',
+    question_list_content TEXT NOT NULL DEFAULT '',
+    presentation_transcript TEXT NOT NULL DEFAULT '',
+    qa_transcript TEXT NOT NULL DEFAULT '',
+    summary_briefing TEXT NOT NULL DEFAULT '',
+    summary_grammar_corrections TEXT NOT NULL DEFAULT '[]',
+    summary_suggestions TEXT NOT NULL DEFAULT '[]',
+    full_audio_path TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_thinker_rehearsals_status
+    ON thinker_rehearsals(status, created_at);
 """,
 }

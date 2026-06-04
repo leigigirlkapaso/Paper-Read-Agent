@@ -27,6 +27,7 @@ def test_all_tables_created():
     assert "thinker_pending_questions" in table_names
     assert "thinker_memory_index" in table_names
     assert "thinker_user_profile" in table_names
+    assert "thinker_rehearsals" in table_names
 
 
 def test_conversations_columns():
@@ -75,4 +76,4 @@ def test_migration_version_recorded():
     row = core.db.conn.execute(
         "SELECT MAX(version) FROM thinker_schema_version"
     ).fetchone()
-    assert row[0] == 2
+    assert row[0] == 3

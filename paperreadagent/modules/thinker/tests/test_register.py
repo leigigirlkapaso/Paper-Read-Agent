@@ -19,7 +19,7 @@ def test_register_returns_valid_module_info(core):
     info = register(core)
     assert isinstance(info, ModuleInfo)
     assert info.name == "thinker"
-    assert info.version == "0.1.0"
+    assert info.version == "0.2.0"
     assert info.schema_version >= 1
     assert info.routes is not None
 
@@ -41,4 +41,4 @@ def test_module_appears_in_core_registry(core):
     mod = core.get_module("thinker")
     assert mod is not None
     assert mod.name == "thinker"
-    assert mod.version == "0.1.0"
+    assert mod.version == "0.2.0"

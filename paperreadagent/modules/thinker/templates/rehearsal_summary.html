@@ -17,14 +17,16 @@
     </details>
 </div>
 
-<!-- Part 2: Briefing -->
+<!-- Part 2: Briefing (rendered as Markdown) -->
 <div class="mb-6">
     <h3 class="text-sm font-semibold mb-2 flex items-center gap-2">
         <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-xs">第二部分</span>
-        对话简报
+        评估报告
     </h3>
-    <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm leading-relaxed"
-         x-text="summaryData.part2_briefing || '暂无简报'"></div>
+    <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm leading-relaxed prose prose-sm max-w-none"
+         x-html="summaryData.part2_briefing
+             ? renderMarkdown(summaryData.part2_briefing)
+             : '<p class=\'text-gray-400\'>暂无评估报告</p>'"></div>
 </div>
 
 <!-- Part 3: Grammar Corrections -->
@@ -34,14 +36,19 @@
         语法纠正
     </h3>
     <div x-show="!summaryData.part3_grammar_corrections || summaryData.part3_grammar_corrections.length === 0"
-         class="text-sm text-gray-400">无语法错误 🎉</div>
+         class="text-sm text-gray-400">🎉 未发现语法错误</div>
     <template x-for="item in summaryData.part3_grammar_corrections" :key="item.id">
         <div class="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-2 text-sm">
-            <div class="flex gap-3 flex-wrap">
-                <span class="text-red-500 line-through" x-text="item.original"></span>
-                <span class="text-gray-400">→</span>
-                <span class="text-green-600 font-medium" x-text="item.corrected"></span>
+            <div class="flex items-center gap-2 flex-wrap mb-1.5">
+                <span class="text-xs font-medium px-1.5 py-0.5 rounded"
+                      :class="item.language === 'en' ? 'bg-blue-50 text-blue-700' : 'bg-green-50 text-green-700'"
+                      x-text="item.language === 'en' ? 'EN' : '中'"></span>
+                <span class="text-red-500 line-through text-xs" x-text="item.original"></span>
             </div>
+            <div class="flex items-center gap-1 text-xs text-gray-400 mb-0.5">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
+            </div>
+            <div class="text-green-600 font-medium text-sm" x-text="item.corrected"></div>
             <p class="text-xs text-gray-500 mt-1" x-text="item.note"></p>
         </div>
     </template>
@@ -51,19 +58,21 @@
 <div class="mb-6">
     <h3 class="text-sm font-semibold mb-2 flex items-center gap-2">
         <span class="bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded text-xs">第四部分</span>
-        演讲建议
+        改进建议
     </h3>
     <template x-for="item in summaryData.part4_suggestions" :key="item.id">
         <div class="border-l-2 mb-3 pl-4"
              :class="{
                 'border-indigo-400': item.category === '内容建议',
                 'border-purple-400': item.category === '表达建议',
+                'border-orange-400': item.category === '结构建议',
                 'border-cyan-400': item.category === '优化示范'
              }">
             <span class="text-xs font-medium px-1.5 py-0.5 rounded"
                   :class="{
                     'bg-indigo-50 text-indigo-700': item.category === '内容建议',
                     'bg-purple-50 text-purple-700': item.category === '表达建议',
+                    'bg-orange-50 text-orange-700': item.category === '结构建议',
                     'bg-cyan-50 text-cyan-700': item.category === '优化示范'
                   }"
                   x-text="item.category"></span>
@@ -73,4 +82,6 @@
                x-text="'💡 ' + item.example"></p>
         </div>
     </template>
+    <div x-show="!summaryData.part4_suggestions || summaryData.part4_suggestions.length === 0"
+         class="text-sm text-gray-400">暂无建议</div>
 </div>

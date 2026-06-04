@@ -1,5 +1,5 @@
 <!-- Records Tab: Uses Alpine component thinkerRecords() -->
-<div x-data="thinkerRecords()" x-init="loadRecords()">
+<div x-data="thinkerRecords()" x-init="loadRecords()" @tab-records.window="loadRecords()">
     <div class="flex items-center gap-3 mb-4">
         <input x-model="searchQuery" @input.debounce.300ms="loadRecords()"
                type="text" placeholder="🔍 搜索历史记录..."
@@ -43,10 +43,7 @@
                 <button @click="selectedDetail = null" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
             </div>
             <div class="p-6" x-show="selectedDetail">
-                <!-- Embed the four-part summary display -->
-                <div x-data="{ summaryData: selectedDetail }">
-                    {% include "thinker/rehearsal_summary.html" %}
-                </div>
+                {% include "rehearsal_summary.html" %}
             </div>
         </div>
     </div>

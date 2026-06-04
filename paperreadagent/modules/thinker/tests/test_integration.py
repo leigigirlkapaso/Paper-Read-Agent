@@ -12,10 +12,10 @@ async def test_full_module_registration(thinker_core):
     assert thinker_core.get_module("thinker") is not None
     info = thinker_core.get_module("thinker")
     assert info.name == "thinker"
-    assert info.version == "0.1.0"
-    assert info.schema_version == 2
+    assert info.version == "0.2.0"
+    assert info.schema_version == 3
 
-    # 验证六张表存在
+    # 验证七张表存在
     tables = thinker_core.db.conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'thinker_%'"
     ).fetchall()
@@ -26,9 +26,11 @@ async def test_full_module_registration(thinker_core):
     assert "thinker_pending_questions" in table_names
     assert "thinker_memory_index" in table_names
     assert "thinker_user_profile" in table_names
+    assert "thinker_rehearsals" in table_names
 
-    # 验证前端组件已注册
-    assert len(thinker_core.frontend._components) >= 1
+    # 验证不注册全局浮动组件（v0.2.0 改为独立页面）
+    comp_names = [c.name for c in thinker_core.frontend._components]
+    assert "thinker-panel" not in comp_names
 
 
 @pytest.mark.asyncio

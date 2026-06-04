@@ -1,9 +1,11 @@
 """
 utils/pdf_parser.py
-使用 pymupdf4llm 将 PDF 转换为适合 LLM 阅读的 Markdown 文本。
-- 数学公式保留为 LaTeX（$...$ / $$...$$）
-- 若正文超出 max_chars，自动截取摘要 + 引言 + 结论段落
-- 正则匹配兼容 pymupdf4llm 实际输出格式（含加粗标记 ** 和章节编号）
+PDF → Markdown 文本转换，供 LLM 精读使用。
+
+策略：
+- arXiv 论文（有 arxiv_id）：优先从 ar5iv 获取 HTML 版（公式完美保留）
+- 其他所有论文：pymupdf4llm PDF → Markdown
+- 超出 max_chars 时自动截取摘要 + 引言 + 结论
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from pathlib import Path
 import pymupdf4llm
 
 logger = logging.getLogger(__name__)
+
+_ARXIV_ID_PATTERN = re.compile(r"(\d{4}\.\d{4,5})")
 
 # 匹配 pymupdf4llm 实际输出：## **1 Introduction** / ## Introduction / ## 1. Background
 _INTRO_PATTERN = re.compile(
@@ -36,18 +40,40 @@ _REFERENCES_PATTERN = re.compile(
 _ANY_HEADING = re.compile(r"^#{1,3}\s", re.MULTILINE)
 
 
-def parse_pdf(pdf_path: str | Path, max_chars: int = 60000) -> str:
+def parse_pdf(
+    pdf_path: str | Path,
+    max_chars: int = 110000,
+    arxiv_id: str = "",
+) -> str:
     """
     解析 PDF 文件，返回 Markdown 格式字符串。
 
+    arXiv 论文优先从 ar5iv 获取 HTML 版（公式完美保留为 LaTeX）。
+    失败时回退到 pymupdf4llm。
+
     Args:
-        pdf_path:  PDF 文件路径
-        max_chars: 送入 LLM 的最大字符数。超出时优先保留摘要+引言+结论。
+        pdf_path:   PDF 文件路径
+        max_chars:  送入 LLM 的最大字符数
+        arxiv_id:   可选的 arXiv ID（如 "2604.20210"），用于尝试 ar5iv
 
     Returns:
         Markdown 字符串
     """
     pdf_path = Path(pdf_path)
+
+    # ── arXiv 论文：尝试 ar5iv HTML ──────────────────────────────
+    if not arxiv_id and not pdf_path.exists():
+        raise FileNotFoundError(f"PDF 文件不存在: {pdf_path}")
+
+    if arxiv_id:
+        md_text = _try_ar5iv(arxiv_id)
+        if md_text:
+            if len(md_text) <= max_chars:
+                return md_text
+            return _truncate_smart(md_text, max_chars)
+        logger.info(f"[PDFParser] ar5iv 不可用，回退 PDF 解析: {arxiv_id}")
+
+    # ── PDF 解析 ─────────────────────────────────────────────
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF 文件不存在: {pdf_path}")
 
@@ -65,6 +91,65 @@ def parse_pdf(pdf_path: str | Path, max_chars: int = 60000) -> str:
         f"超过 {max_chars}，自动截取关键段落。"
     )
 
+    return _truncate_smart(md_text, max_chars)
+
+
+# ── ar5iv HTML parser ────────────────────────────────────────
+
+def _try_ar5iv(arxiv_id: str) -> str | None:
+    """Attempt to fetch and parse ar5iv HTML version of an arXiv paper.
+
+    ar5iv preserves LaTeX formulas natively, unlike PDF extraction.
+    Returns None if the HTML version is unavailable or parsing fails.
+    """
+    import urllib.request
+    import urllib.error
+
+    url = f"https://ar5iv.labs.arxiv.org/html/{arxiv_id}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "PaperReadAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            html = resp.read().decode("utf-8")
+    except Exception as e:
+        logger.warning(f"[PDFParser] ar5iv fetch failed for {arxiv_id}: {e}")
+        return None
+
+    if not html or len(html) < 1000:
+        return None
+
+    try:
+        from markdownify import markdownify
+        md = markdownify(html, heading_style="ATX", strip=["nav", "footer", "script", "style"])
+    except ImportError:
+        # Fallback: use markdown library
+        import markdown
+        md = markdown.markdown(html)
+    except Exception as e:
+        logger.warning(f"[PDFParser] ar5iv HTML→MD conversion failed: {e}")
+        return None
+
+    # Strip ar5iv chrome (nav bars, copyright, etc.)
+    md = _clean_ar5iv_markdown(md)
+    if md and len(md) > 500:
+        logger.info(f"[PDFParser] ar5iv OK: {arxiv_id}, {len(md)} chars")
+        return md
+    return None
+
+
+def _clean_ar5iv_markdown(md: str) -> str:
+    """Remove ar5iv navigation chrome from the markdown output."""
+    # Remove the initial navigation/header blocks
+    md = re.sub(r'^# arXiv:[^\n]*\n', '', md)
+    md = re.sub(r'\n\[←\]\([^)]+\)\s*\[→\]\([^)]+\)', '', md)
+    # Remove excessive blank lines
+    md = re.sub(r'\n{4,}', '\n\n\n', md)
+    return md.strip()
+
+
+# ── Truncation helpers ───────────────────────────────────────
+
+def _truncate_smart(md_text: str, max_chars: int) -> str:
+    """Truncate to max_chars, preferring abstract + intro + conclusion."""
     # 优先用正则定位章节
     sections = _extract_key_sections(md_text, max_chars)
 
@@ -72,7 +157,7 @@ def parse_pdf(pdf_path: str | Path, max_chars: int = 60000) -> str:
     if len(sections) <= 1:
         logger.info("[PDFParser] 正则匹配不足，尝试 TOC 回退...")
         try:
-            toc_sections = _extract_key_sections_from_toc(pdf_path, max_chars)
+            toc_sections = _extract_key_sections_from_toc(md_text, max_chars)
             if len(toc_sections) > len(sections):
                 sections = toc_sections
         except Exception as e:

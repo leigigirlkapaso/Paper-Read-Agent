@@ -34,7 +34,7 @@ async def read_paper(
     summary_prompt: str,
     topic: str,
     llm: LLMClient,
-    max_chars: int = 60000,
+    max_chars: int = 110000,
     db: "Database | None" = None,
     session_id: int = 0,
 ) -> str:

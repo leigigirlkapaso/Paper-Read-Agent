@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agent1.arxiv_searcher import PaperMeta
 from utils.llm_client import LLMClient
@@ -48,10 +49,11 @@ def filter_papers(
     papers: list[PaperMeta],
     topic: str,
     llm: LLMClient,
-    relevance_threshold: float = 0.6,
+    relevance_threshold: float = 0.8,
     max_download_papers: int = 20,
     batch_size: int = 10,
     quality_weight: float = 0.0,
+    max_concurrent: int = 100,
 ) -> list[PaperMeta]:
     """
     对候选论文批量打分，返回相关性达标的论文（按分数降序）。
@@ -64,34 +66,48 @@ def filter_papers(
         max_download_papers:  最多保留篇数
         batch_size:           每批处理的文献数量
         quality_weight:       质量权重 0~1（0=纯相关性，0.2=轻微考虑引用/顶会/代码）
+        max_concurrent:       打分并发上限（批次级别）
 
     Returns:
         筛选后的 PaperMeta 列表（已填充 relevance_score）
     """
+    total_batches = (len(papers) + batch_size - 1) // batch_size
+    workers = min(max_concurrent, total_batches)
     logger.info(
         f"[AGENT1-B] 开始筛选 {len(papers)} 篇候选文献"
-        f"（batch={batch_size}, qw={quality_weight}）..."
+        f"（batch={batch_size}, workers={workers}, qw={quality_weight}）..."
     )
 
-    # 分批处理
+    # 分批并行打分
+    batches = []
     for batch_start in range(0, len(papers), batch_size):
         batch = papers[batch_start : batch_start + batch_size]
-        _score_batch(batch, topic, llm, batch_start)
+        batches.append((batch, batch_start))
 
-    # 边界论文重试打分：阈值 -0.1 以内再打 2 次，取最高分
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {
+            ex.submit(_score_batch, batch, topic, llm, offset): offset
+            for batch, offset in batches
+        }
+        for f in as_completed(futures):
+            f.result()  # 异常已在 _score_batch 内部处理
+
+    # 边界论文重试打分：阈值 -0.1 以内再打 2 次，取最高分（并行）
     borderline = [p for p in papers
                   if relevance_threshold - 0.1 <= p.relevance_score < relevance_threshold]
     if borderline:
         logger.info(f"[AGENT1-B] {len(borderline)} 篇边界论文，重试打分（最多 2 次）...")
-        for p in borderline:
-            best = p.relevance_score
-            for attempt in range(2):
-                _score_batch([p], topic, llm, 0)
-                if p.relevance_score > best:
-                    best = p.relevance_score
-                    if best >= relevance_threshold:
-                        break
-            p.relevance_score = best
+        with ThreadPoolExecutor(max_workers=min(workers, len(borderline))) as ex:
+            futures = {
+                ex.submit(_retry_borderline, p, topic, llm, relevance_threshold): p
+                for p in borderline
+            }
+            for f in as_completed(futures):
+                try:
+                    best = f.result()
+                    futures[f].relevance_score = best
+                except Exception:
+                    logger.error("[AGENT1-B] 边界重试异常", exc_info=True)
 
     # 质量加权混合
     if quality_weight > 0:
@@ -141,6 +157,18 @@ def _score_batch(
         logger.error(f"[AGENT1-B] 批次打分失败，全批赋予中性分 0.5: {e}")
         for p in batch:
             p.relevance_score = 0.5
+
+
+def _retry_borderline(p: PaperMeta, topic: str, llm: LLMClient, threshold: float) -> float:
+    """对单篇边界论文重试打分最多 2 次，返回最高分。"""
+    best = p.relevance_score
+    for _ in range(2):
+        _score_batch([p], topic, llm, 0)
+        if p.relevance_score > best:
+            best = p.relevance_score
+            if best >= threshold:
+                break
+    return best
 
 
 def _format_paper_for_scoring(idx: int, p: PaperMeta) -> str:

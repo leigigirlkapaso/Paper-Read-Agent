@@ -27,7 +27,7 @@ async def run_parallel(
     topic: str,
     llm: LLMClient,
     max_concurrent: int = 100,
-    max_chars: int = 60000,
+    max_chars: int = 110000,
     db: "Database | None" = None,
     session_id: int = 0,
 ) -> list[tuple[PaperMeta, str]]:

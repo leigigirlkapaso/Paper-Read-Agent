@@ -37,6 +37,7 @@ from agent1.paper_filter import filter_papers
 from agent1.semantic_scholar_searcher import search_semantic_scholar
 from agent1.pwc_searcher import search_pwc
 from agent1.openalex_searcher import search_openalex
+from agent1.dblp_searcher import search_dblp
 from agent2.parallel_runner import run_parallel
 from utils.llm_client import LLMClient
 from utils.arxiv_downloader import download_papers_batch  # 保留向后兼容
@@ -460,8 +461,18 @@ def run_online_search(
             )
         search_tasks.append(("oa", _run_oa))
 
+    dblp_enabled = sources_cfg.get("dblp", False)
+    if dblp_enabled:
+        def _run_dblp():
+            return search_dblp(
+                queries=queries, max_results_per_query=sources_cfg.get("dblp_max_per_query", 100),
+                min_year=min_year, query_delay=sources_cfg.get("dblp_query_delay", 2.0),
+                max_queries=research_cfg.get("max_queries", 8),
+            )
+        search_tasks.append(("dblp", _run_dblp))
+
     all_candidates: list[PaperMeta] = []
-    platform_map = {"arxiv": "arxiv", "s2": "s2", "pwc": "pwc", "oa": "oa"}
+    platform_map = {"arxiv": "arxiv", "s2": "s2", "pwc": "pwc", "oa": "oa", "dblp": "dblp"}
 
     if len(search_tasks) > 1:
         # 多平台并行检索
@@ -529,12 +540,13 @@ def run_online_search(
 
     filtered_papers = filter_papers(
         papers=candidates, topic=topic, llm=llm,
-        relevance_threshold=research_cfg.get("relevance_threshold", 0.6),
+        relevance_threshold=research_cfg.get("relevance_threshold", 0.8),
         max_download_papers=research_cfg.get("max_download_papers", 20),
         batch_size=research_cfg.get("search_batch_size", 10),
+        max_concurrent=research_cfg.get("filter_max_concurrent", 100),
     )
     print(f"  筛选后保留：{len(filtered_papers)} 篇")
-    cb("filtering", f"筛选完成，保留 {len(filtered_papers)} 篇（阈值 ≥{research_cfg.get('relevance_threshold', 0.6)}）")
+    cb("filtering", f"筛选完成，保留 {len(filtered_papers)} 篇（阈值 ≥{research_cfg.get('relevance_threshold', 0.8)}）")
     db.update_session(session_id, total_filtered=len(filtered_papers))
 
     # 更新筛选状态
@@ -636,7 +648,7 @@ async def run_analysis(
         topic=topic,
         llm=llm,
         max_concurrent=concurrency.get("max_concurrent", 100),
-        max_chars=pdf_cfg.get("max_chars", 60000),
+        max_chars=pdf_cfg.get("max_chars", 110000),
         db=db,
         session_id=session_id,
     )

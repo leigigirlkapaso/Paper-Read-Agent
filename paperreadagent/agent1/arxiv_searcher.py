@@ -56,7 +56,7 @@ def search_papers(
 
     Args:
         queries:             检索查询串列表（来自 keyword_extractor）
-        max_results:         每条 query 最多返回篇数（上限 100，避免分页）
+        max_results:         每条 query 最多返回篇数（上限 300，走分页）
         keywords:            关键词列表，用于 fallback 兜底
         min_results:         期望的最小候选总量，不足时触发 fallback 扩展
         max_queries:         最多执行的 query 数量（防止查询过多触发限流）
@@ -80,8 +80,9 @@ def search_papers(
     else:
         logger.info(f"[AGENT1] 排序方式: {sort_label}，年份过滤: 无")
 
-    # arxiv API 每页上限 100 条；page_size == max_results → 只需一页请求
-    per_query_max = min(max_results, 100)
+    # arxiv API 每页最多 100 条；>100 时 Client 自动分页（delay_seconds 间隔）
+    per_query_max = min(max_results, 300)
+    page_size = min(per_query_max, 100)
 
     seen_ids: set[str] = set()
     papers: list[PaperMeta] = []
@@ -89,8 +90,8 @@ def search_papers(
     queries_run: int = 0             # 已执行 query 计数
 
     client = arxiv.Client(
-        page_size=per_query_max,   # page_size == max_results → 永远只需一页
-        delay_seconds=3,           # 同一 client 内部分页间隔（实际不会分页）
+        page_size=page_size,       # 每页 100 条，超出时自动翻页
+        delay_seconds=5,           # 翻页间隔（分页请求需更礼貌）
         num_retries=1,             # 失败只重试1次，429 后由外层 backoff 处理
     )
 

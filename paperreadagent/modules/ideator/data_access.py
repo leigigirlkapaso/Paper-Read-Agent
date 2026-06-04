@@ -14,13 +14,84 @@ logger = logging.getLogger(__name__)
 
 
 class DataAccess:
-    """ideator 统一数据访问。对上层屏蔽 legacy/core 双句柄。"""
+    """ideator 统一数据访问。对上层屏蔽 legacy/core 双句柄。
+
+    v2: 火花 embedding 使用 LanceDB ANN 替代暴力搜索去重。
+    """
 
     def __init__(self, core: Core):
         self._core = core
         if core.legacy_db is None:
             raise RuntimeError("Core.legacy_db 未注入，请确保 web/app.py 已桥接")
         self._legacy = core.legacy_db
+        self._spark_lance_ready = False
+        self._spark_lance_table = None
+        self._ensure_spark_lance()
+
+    def _ensure_spark_lance(self) -> None:
+        """Initialize LanceDB table for spark embeddings."""
+        try:
+            import lancedb
+            import pyarrow as pa
+            from pathlib import Path
+
+            base = Path(__file__).parent.parent.parent.parent
+            uri = str(base / "data" / "lancedb")
+            Path(uri).mkdir(parents=True, exist_ok=True)
+            db = lancedb.connect(uri)
+
+            try:
+                self._spark_lance_table = db.open_table("sparks")
+            except Exception:
+                schema = pa.schema([
+                    pa.field("id", pa.int64()),
+                    pa.field("vector", pa.list_(pa.float32(), 1024)),
+                ])
+                self._spark_lance_table = db.create_table("sparks", schema=schema, mode="create")
+                logger.info("[DataAccess] LanceDB spark index created")
+                # Auto-migrate existing spark embeddings
+                self._migrate_sparks_to_lance()
+
+            self._spark_lance_ready = True
+        except Exception:
+            logger.warning("[DataAccess] LanceDB spark index unavailable", exc_info=True)
+
+    def _migrate_sparks_to_lance(self) -> int:
+        """One-time migration of existing spark embeddings to LanceDB."""
+        if self._spark_lance_table is None:
+            return 0
+        try:
+            from paperreadagent.core.embedding import unpack_embedding
+            rows = self._core.db.conn.execute(
+                "SELECT id, embedding FROM ideator_sparks WHERE embedding != '' AND embedding IS NOT NULL"
+            ).fetchall()
+            if not rows:
+                return 0
+            # Dedup guard: clear before populate (aligns with knowledge.py)
+            try:
+                self._spark_lance_table.delete("id >= 0")
+            except Exception:
+                pass
+            data = []
+            batch = []
+            for r in rows:
+                emb = unpack_embedding(r["embedding"])
+                if not emb:
+                    continue
+                batch.append({"id": r["id"], "vector": [float(x) for x in emb]})
+                if len(batch) >= 500:
+                    self._spark_lance_table.add(batch)
+                    data.extend(batch)
+                    batch = []
+            if batch:
+                self._spark_lance_table.add(batch)
+                data.extend(batch)
+            if data:
+                logger.info(f"[DataAccess] Migrated {len(data)} spark embeddings to LanceDB")
+            return len(data)
+        except Exception:
+            logger.warning("[DataAccess] Spark migration failed", exc_info=True)
+            return 0
 
     # ── 论文层（走 legacy）──────────────────────
 
@@ -133,12 +204,46 @@ class DataAccess:
         self, embedding: list[float], *, top_k: int = 3,
         min_similarity: float = 0.60,
     ) -> list[dict]:
-        """通过 embedding 向量查找语义相似的火花。"""
-        from paperreadagent.core.embedding import cosine_similarity, unpack_embedding
-        existing = self.get_existing_sparks(limit=200)
-        if not existing or not embedding:
+        """通过 embedding 向量查找语义相似的火花（LanceDB ANN 搜索）。"""
+        if not embedding:
             return []
 
+        # Try LanceDB ANN first
+        if self._spark_lance_ready and self._spark_lance_table is not None:
+            try:
+                query_vec = [float(x) for x in embedding]
+                results = self._spark_lance_table.search(query_vec)\
+                    .limit(max(top_k, 5))\
+                    .to_list()
+                spark_ids = [r["id"] for r in results
+                             if (1.0 - r.get("_distance", 0) ** 2 / 2.0) >= min_similarity]
+                if spark_ids:
+                    rows = self._core.db.conn.execute(
+                        f"""SELECT id, content, quality_score, status, source_type
+                           FROM ideator_sparks WHERE id IN ({','.join('?' for _ in spark_ids)})""",
+                        spark_ids,
+                    ).fetchall()
+                    scored = []
+                    for r in rows:
+                        match = next((x for x in results if x["id"] == r["id"]), None)
+                        sim = 1.0 - (match["_distance"] ** 2 / 2.0) if match else min_similarity
+                        scored.append({
+                            "id": r["id"], "content": r["content"][:500] if r["content"] else "",
+                            "quality_score": r["quality_score"] or 0,
+                            "status": r["status"] or "",
+                            "source_type": r["source_type"] or "",
+                            "similarity": round(sim, 4),
+                        })
+                    scored.sort(key=lambda x: x["similarity"], reverse=True)
+                    return scored[:top_k]
+            except Exception:
+                logger.warning("[DataAccess] LanceDB spark search failed, fallback", exc_info=True)
+
+        # Fallback: brute-force cosine similarity
+        from paperreadagent.core.embedding import cosine_similarity, unpack_embedding
+        existing = self.get_existing_sparks(limit=200)
+        if not existing:
+            return []
         scored = []
         for s in existing:
             emb = unpack_embedding(s.get("embedding", ""))
@@ -147,14 +252,11 @@ class DataAccess:
             sim = cosine_similarity(embedding, emb)
             if sim >= min_similarity:
                 scored.append({
-                    "id": s["id"],
-                    "content": s.get("content", "")[:500],
+                    "id": s["id"], "content": s.get("content", "")[:500],
                     "quality_score": s.get("quality_score", 0),
-                    "status": s.get("status", ""),
-                    "source_type": s.get("source_type", ""),
+                    "status": s.get("status", ""), "source_type": s.get("source_type", ""),
                     "similarity": round(sim, 4),
                 })
-
         scored.sort(key=lambda x: x["similarity"], reverse=True)
         return scored[:top_k]
 
@@ -187,7 +289,38 @@ class DataAccess:
              vals["review_status"], vals["review_count"], vals["depth_content"]),
         )
         self._core.db.conn.commit()
-        return cursor.lastrowid
+        spark_id = cursor.lastrowid
+
+        # Dual-write to LanceDB for fast ANN dedup
+        emb_str = vals.get("embedding", "")
+        if emb_str and self._spark_lance_ready:
+            self._spark_to_lance(spark_id, emb_str)
+
+        return spark_id
+
+    def _spark_to_lance(self, spark_id: int, embedding) -> None:
+        """Write a spark embedding to the LanceDB index."""
+        if not self._spark_lance_ready or self._spark_lance_table is None:
+            return
+        try:
+            if isinstance(embedding, str):
+                from paperreadagent.core.embedding import unpack_embedding
+                emb_list = unpack_embedding(embedding)
+            else:
+                emb_list = embedding
+            if not emb_list:
+                return
+            # Delete old vector before adding (upsert by delete+add)
+            try:
+                self._spark_lance_table.delete(f"id = {spark_id}")
+            except Exception:
+                pass
+            self._spark_lance_table.add([{
+                "id": spark_id,
+                "vector": [float(x) for x in emb_list],
+            }])
+        except Exception:
+            logger.debug(f"[DataAccess] LanceDB spark write failed for id={spark_id}", exc_info=True)
 
     def insert_cross_link(self, **fields) -> int:
         cursor = self._core.db.conn.execute(
@@ -222,6 +355,12 @@ class DataAccess:
             f"UPDATE ideator_sparks SET {set_clause} WHERE id = ?", vals,
         )
         self._core.db.conn.commit()
+
+        # Sync LanceDB if embedding changed
+        if "embedding" in updates:
+            emb = updates["embedding"]
+            if emb:
+                self._spark_to_lance(spark_id, emb)
 
     def get_spark(self, spark_id: int) -> dict | None:
         row = self._core.db.conn.execute(

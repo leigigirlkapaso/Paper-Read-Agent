@@ -165,7 +165,7 @@ def create_core(
     if not llm_cfg:
         llm_cfg = merged_config.get("llm", {})
     knowledge_cfg = merged_config.get("core", {}).get("knowledge", {})
-    embedding_model = knowledge_cfg.get("embedding_model", "BAAI/bge-large-zh-v1.5")
+    embedding_model = knowledge_cfg.get("embedding_model", "BAAI/bge-m3")
     embedding_provider = knowledge_cfg.get("embedding_provider", "local")
     llm_cfg["embedding_model"] = embedding_model
     llm_cfg["embedding_provider"] = embedding_provider
@@ -183,6 +183,16 @@ def create_core(
 
     # 子系统
     knowledge = KnowledgeLayer(db)
+
+    # 自动将 SQLite 中已有 embedding 迁移到 LanceDB（非阻塞，失败静默跳过）
+    try:
+        n = knowledge.populate_lance_from_sqlite()
+        if n:
+            import logging
+            logging.getLogger(__name__).info(f"[Core] Auto-migrated {n} embeddings to LanceDB")
+    except Exception:
+        pass
+
     scheduler = CoreScheduler(
         timezone=merged_config.get("core", {}).get("scheduler", {}).get("timezone", timezone)
     )

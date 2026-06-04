@@ -38,7 +38,7 @@ class CoreLLM:
         model_name: str,
         temperature: float = 0.3,
         timeout: float = 300.0,
-        embedding_model: str = "BAAI/bge-large-zh-v1.5",
+        embedding_model: str = "BAAI/bge-m3",
         embedding_provider: str = "local",
         db: CoreDatabase | None = None,
     ):
@@ -70,7 +70,7 @@ class CoreLLM:
             api_base_url=llm_cfg["api_base_url"],
             model_name=llm_cfg["model_name"],
             temperature=llm_cfg.get("temperature", 0.3),
-            embedding_model=llm_cfg.get("embedding_model", "BAAI/bge-large-zh-v1.5"),
+            embedding_model=llm_cfg.get("embedding_model", "BAAI/bge-m3"),
             embedding_provider=llm_cfg.get("embedding_provider", "local"),
             db=db,
         )

@@ -21,7 +21,7 @@ _DEFAULT_STT_MODEL = "whisper-large-v3"
 _DEFAULT_TTS_MODEL = "gemini-2.5-pro-preview-tts"
 _DEFAULT_TTS_VOICE = "achird"
 _DEFAULT_TTS_SPEED = 1.0
-_DEFAULT_STT_LANGUAGE = "zh"
+_DEFAULT_STT_LANGUAGE = ""
 _DEFAULT_AUDIO_FORMAT = "webm"
 _DELIMITERS = frozenset("，。！？,.!?\n")
 

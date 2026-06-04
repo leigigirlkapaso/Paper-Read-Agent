@@ -49,6 +49,8 @@ uv sync
 | `pyyaml` | 配置文件解析 |
 | `tqdm` | CLI 进度条 |
 | `numpy` | 向量相似度计算 |
+| `lancedb` | 向量数据库（语义检索 + 知识库） |
+| `av` | pyav 音频格式转码（语音功能） |
 
 **虚拟环境说明：**
 - `.venv/` 目录已被 `.gitignore` 排除，不会推送到 GitHub
@@ -105,7 +107,7 @@ research:
 - `sources.openalex: true` — OpenAlex 免费，250M+ 文献，建议保留开启
 - `sources.semantic_scholar: false` — 需要免费 API Key，默认关闭
 - `max_search_results: 200` — 每条 query 返回的候选文献数
-- `relevance_threshold: 0.7` — 相关性筛选阈值（0-1），低于此值的论文被过滤
+- `relevance_threshold: 0.8` — 相关性筛选阈值（0-1），低于此值的论文被过滤
 
 ### 6. 启动 Web 界面
 
@@ -139,21 +141,23 @@ uv run uvicorn paperreadagent.web.app:app --reload --port 8000
 用户输入研究构想
     │
     ▼
-AGENT1: 关键词提取（LLM 三层策略）
+AGENT1-A: LLM 拆解研究角度 → 中英关键词映射 → 四维 query 矩阵
+         （每个角度 × 宽泛召回 / 方法聚焦 / 竞争方案 / 评估范式）
     │
     ├── arxiv API 检索
     ├── Semantic Scholar API
     ├── Papers With Code API
-    └── OpenAlex API（免费 2 亿+ 文献）
+    ├── OpenAlex API（免费 2.5 亿+ 文献）
+    └── DBLP API（CS 顶会/期刊，覆盖 HCI 等非 arXiv 学科）
     │
     ▼
-AGENT1-B: LLM 批量打分筛选（相关性 0-1 分）
+AGENT1-B: LLM 并行批量打分筛选（相关性 0-1 分，边界重试）
     │
     ▼
-多源 PDF 下载（arXiv → Unpaywall → Semantic Scholar → Sci-Hub）
+多源 PDF 下载（arXiv → Direct URL → Unpaywall → Semantic Scholar → Sci-Hub）
     │
     ▼
-AGENT2: asyncio 并发 LLM 精读（每篇独立调用）
+AGENT2: asyncio 并发 LLM 精读（每篇独立调用，ar5iv 公式保留）
     │
     ▼
 综述报告 + Thinker 思考伙伴 + Ideator 火花挖掘
@@ -166,7 +170,7 @@ AGENT2: asyncio 并发 LLM 精读（每篇独立调用）
 关键配置块：
 - `llm` — 大语言模型 API
 - `research` — 研究构想 + 检索参数
-- `sources` — 四平台开关（arxiv / semantic_scholar / papers_with_code / openalex）
+- `sources` — 五平台开关（arxiv / semantic_scholar / papers_with_code / openalex / dblp）
 - `downloader` — 多源 PDF 下载（Unpaywall 需邮箱，Sci-Hub 默认关闭）
 - `core.voice` — 语音功能（STT + TTS）
 - `concurrency` — AGENT2 最大并发数
@@ -207,7 +211,7 @@ uv run python -m pytest paperreadagent/core/tests/test_database.py -v
 
 ### Q: arxiv 检索很慢
 
-这是正常的。arxiv API 要求请求间隔 ≥3 秒，四平台并行检索后总耗时约等于最慢的平台。可以暂时关掉不需要的平台：
+这是正常的。arxiv API 要求请求间隔 ≥3 秒，五平台并行检索后总耗时约等于最慢的平台。可以暂时关掉不需要的平台：
 
 ```yaml
 sources:
@@ -215,6 +219,7 @@ sources:
   semantic_scholar: false
   papers_with_code: false
   openalex: false
+  dblp: false
 ```
 
 ### Q: 下载的 PDF 文件在哪？

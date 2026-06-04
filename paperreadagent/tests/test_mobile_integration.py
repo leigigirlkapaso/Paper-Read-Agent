@@ -63,7 +63,8 @@ def test_mobile_nav_template_exists():
     assert tpl.exists()
 
 
-def test_thinker_fullscreen_template_exists():
+def test_thinker_page_template_exists():
+    """v0.2.0: fullscreen.html replaced by thinker_page.html (full-page app)."""
     from pathlib import Path
-    tpl = Path(__file__).parent.parent / "modules" / "thinker" / "templates" / "fullscreen.html"
+    tpl = Path(__file__).parent.parent / "modules" / "thinker" / "templates" / "thinker_page.html"
     assert tpl.exists()

@@ -110,6 +110,9 @@
             <label class="flex items-center gap-2 cursor-pointer text-sm">
                 <input type="checkbox" x-model="source_oa" class="text-indigo-600"> OpenAlex
             </label>
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" x-model="source_dblp" class="text-indigo-600"> DBLP
+            </label>
         </div>
     </div>
 
@@ -139,12 +142,12 @@ function configForm() {
         min_search_results: _defaults.min_search_results || 200,
         max_queries: _defaults.max_queries || 8,
         query_delay: _defaults.query_delay || 8,
-        relevance_threshold: _defaults.relevance_threshold ?? 0.6,
+        relevance_threshold: _defaults.relevance_threshold ?? 0.8,
         max_download_papers: _defaults.max_download_papers || 50,
         min_year: _defaults.min_year || 2022,
         sort_by: _defaults.sort_by || 'date',
         max_concurrent: _defaults.max_concurrent || 100,
-        max_chars: _defaults.max_chars || 80000,
+        max_chars: _defaults.max_chars || 110000,
         summary_prompt: _defaults.summary_prompt || `你是一位资深科研助理，擅长"文献精读 + 研究对齐 + 申博定位"，并且尤其擅长从论文的用户研究中提炼可迁移的设计洞察与评估范式。请对下面提供的论文内容进行结构化分析，并重点阐释该论文如何帮助我把自己的研究摘要与目标导师的研究方向（即这篇论文）建立清晰、可操作的连接。
 
 严格按照以下 7 个维度输出，使用 Markdown 加粗标题，用中文回答，不要输出任何前言或结语。
@@ -171,10 +174,11 @@ function configForm() {
         source_s2: false,
         source_pwc: false,
         source_oa: false,
+        source_dblp: false,
         assembledYaml() {
             let topic = this.topic.replace(/\n/g, '\n    ');
             let sp = this.summary_prompt.replace(/\n/g, '\n    ');
-            return `llm:\n  api_base_url: "${this.api_base_url}"\n  api_key: "${this.api_key}"\n  model_name: "${this.model_name}"\n  temperature: ${this.temperature}\n\nresearch:\n  topic: |\n    ${topic}\n  max_search_results: ${this.max_search_results}\n  min_search_results: ${this.min_search_results}\n  max_queries: ${this.max_queries}\n  query_delay: ${this.query_delay}\n  max_download_papers: ${this.max_download_papers}\n  relevance_threshold: ${this.relevance_threshold}\n  search_batch_size: 10\n  sort_by: "${this.sort_by}"\n  min_year: ${this.min_year}\n\nconcurrency:\n  max_concurrent: ${this.max_concurrent}\n\nsources:\n  arxiv: ${this.source_arxiv}\n  semantic_scholar: ${this.source_s2}\n  papers_with_code: ${this.source_pwc}\n  openalex: ${this.source_oa}\n  s2_api_key: ""\n  s2_max_per_query: 100\n  s2_query_delay: 3.0\n  pwc_max_per_query: 100\n  pwc_query_delay: 2.0\n  oa_max_per_query: 100\n  oa_query_delay: 2.0\n\npdf:\n  max_chars: ${this.max_chars}\n\nsummary_prompt: |\n    ${sp}\n`;
+            return `llm:\n  api_base_url: "${this.api_base_url}"\n  api_key: "${this.api_key}"\n  model_name: "${this.model_name}"\n  temperature: ${this.temperature}\n\nresearch:\n  topic: |\n    ${topic}\n  max_search_results: ${this.max_search_results}\n  min_search_results: ${this.min_search_results}\n  max_queries: ${this.max_queries}\n  query_delay: ${this.query_delay}\n  max_download_papers: ${this.max_download_papers}\n  relevance_threshold: ${this.relevance_threshold}\n  search_batch_size: 10\n  filter_max_concurrent: 100\n  sort_by: "${this.sort_by}"\n  min_year: ${this.min_year}\n\nconcurrency:\n  max_concurrent: ${this.max_concurrent}\n\nsources:\n  arxiv: ${this.source_arxiv}\n  semantic_scholar: ${this.source_s2}\n  papers_with_code: ${this.source_pwc}\n  openalex: ${this.source_oa}\n  s2_api_key: ""\n  s2_max_per_query: 100\n  s2_query_delay: 3.0\n  pwc_max_per_query: 100\n  pwc_query_delay: 2.0\n  oa_max_per_query: 100\n  oa_query_delay: 2.0\n  dblp: ${this.source_dblp}\n  dblp_max_per_query: 100\n  dblp_query_delay: 2.0\n\npdf:\n  max_chars: ${this.max_chars}\n\nsummary_prompt: |\n    ${sp}\n`;
         }
     }
 }

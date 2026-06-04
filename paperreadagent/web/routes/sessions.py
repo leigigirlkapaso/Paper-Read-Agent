@@ -52,17 +52,18 @@ async def session_new_form(request: Request, project_id: int):
         "min_search_results": (_cfg.get("research") or {}).get("min_search_results", 200),
         "max_queries": (_cfg.get("research") or {}).get("max_queries", 8),
         "query_delay": (_cfg.get("research") or {}).get("query_delay", 8),
-        "relevance_threshold": (_cfg.get("research") or {}).get("relevance_threshold", 0.6),
+        "relevance_threshold": (_cfg.get("research") or {}).get("relevance_threshold", 0.8),
         "max_download_papers": (_cfg.get("research") or {}).get("max_download_papers", 50),
         "min_year": (_cfg.get("research") or {}).get("min_year", 2022),
         "sort_by": (_cfg.get("research") or {}).get("sort_by", "date"),
         "max_concurrent": (_cfg.get("concurrency") or {}).get("max_concurrent", 100),
-        "max_chars": (_cfg.get("pdf") or {}).get("max_chars", 80000),
+        "max_chars": (_cfg.get("pdf") or {}).get("max_chars", 110000),
         "summary_prompt": (_cfg.get("summary_prompt") or "").strip(),
         "source_arxiv": (_cfg.get("sources") or {}).get("arxiv", True),
         "source_s2": (_cfg.get("sources") or {}).get("semantic_scholar", False),
         "source_pwc": (_cfg.get("sources") or {}).get("papers_with_code", False),
         "source_oa": (_cfg.get("sources") or {}).get("openalex", False),
+        "source_dblp": (_cfg.get("sources") or {}).get("dblp", False),
     })
 
     return templates.TemplateResponse("session_new.html", {

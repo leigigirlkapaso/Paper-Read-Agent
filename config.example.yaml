@@ -17,10 +17,10 @@ core:
     api_key: "sk-YOUR_API_KEY_HERE"
     model_name: "deepseek-v4-pro"
     temperature: 0.3
-    embedding_model: "BAAI/bge-large-zh-v1.5"
+    embedding_model: "BAAI/bge-m3"
 
   knowledge:
-    embedding_model: "BAAI/bge-large-zh-v1.5"
+    embedding_model: "BAAI/bge-m3"
     embedding_provider: "local"
 
   scheduler:
@@ -33,7 +33,7 @@ core:
     tts_model: "gemini-2.5-pro-preview-tts"
     tts_voice: "achird"
     tts_speed: 1.0
-    stt_language: "zh"
+    stt_language: ""   # 留空则 Whisper 自动检测语言，填入 "zh"/"en" 等强制指定
 
 # ── 1. 大语言模型配置 ──────────────────────────────────────
 llm:
@@ -58,8 +58,9 @@ research:
   max_queries: 8               # 最多执行的 query 数量（防止请求过多触发 arxiv 限流）
   query_delay: 8               # 每条 query 之间的等待秒数（防限流，建议 6~10）
   max_download_papers: 200     # 经 AGENT1 筛选后，最多下载的文献数量
-  relevance_threshold: 0.7    # 相关性分数阈值（0~1），低于此值的文献被过滤
+  relevance_threshold: 0.8    # 相关性分数阈值（0~1），低于此值的文献被过滤
   search_batch_size: 5       # AGENT1 筛选时每批处理的文献数量（控制 token）
+  filter_max_concurrent: 100 # AGENT1 筛选打分并发上限（批次级别）
   sort_by: "date"             # 检索结果排序方式：date=按发表时间降序（最新优先）| relevance=按相关性
   min_year: 2024              # 过滤掉早于此年份的论文（设为 0 则不过滤）
 
@@ -85,6 +86,10 @@ sources:
   oa_max_per_query: 100        # 每条 query 最多取 100 篇
   oa_query_delay: 2.0          # 每条 query 间隔秒数
 
+  dblp: false                   # DBLP（CS 领域顶会/期刊索引，覆盖 HCI 等非 arXiv 学科）
+  dblp_max_per_query: 100      # 每条 query 最多取 100 篇（上限 1000）
+  dblp_query_delay: 2.0        # 每条 query 间隔秒数
+
 # ── 5. 多源下载配置 ────────────────────────────────────────
 downloader:
   # Unpaywall: 需要提供邮箱以获得免费 API 访问
@@ -100,7 +105,7 @@ downloader:
 
 # ── 6. PDF 解析参数 ──────────────────────────────────────────
 pdf:
-  max_chars: 80000            # 送入 LLM 的最大字符数（超出则截断保留摘要+引言+结论）
+  max_chars: 110000            # 送入 LLM 的最大字符数（超出则截断保留摘要+引言+结论）
 
 # ── 7. AGENT2 总结 Prompt ────────────────────────────────────
 # 你可以自由修改以下 prompt，系统会将它拼接到每篇论文内容前发给大模型

@@ -285,7 +285,12 @@ class TestCoreLLMErrorHandling:
 class TestEmbedBatch:
     def _llm(self, sample_llm_config):
         from core.llm import CoreLLM
-        return CoreLLM.from_config(sample_llm_config)
+        cfg = dict(sample_llm_config)
+        # These tests patch llm.embed and verify the generic remote-style
+        # concurrent slot behavior. Local provider has a dedicated batch path
+        # tested separately below.
+        cfg["embedding_provider"] = "remote"
+        return CoreLLM.from_config(cfg)
 
     @pytest.mark.asyncio
     async def test_returns_list_per_text(self, sample_llm_config):
@@ -340,3 +345,53 @@ class TestEmbedBatch:
         # concurrency=0 must be guarded to >=1 internally; else asyncio.Semaphore(0) deadlocks.
         out = await asyncio.wait_for(llm.embed_batch(["a", "b"], concurrency=0), timeout=1.0)
         assert out == [[0.7], [0.7]]
+
+
+class TestLocalEmbedBatch:
+    def _llm(self, sample_llm_config):
+        from core.llm import CoreLLM
+        cfg = dict(sample_llm_config)
+        cfg["embedding_provider"] = "local"
+        return CoreLLM.from_config(cfg)
+
+    @pytest.mark.asyncio
+    async def test_local_embed_batch_uses_single_batch_encode(self, sample_llm_config):
+        """Local provider should encode the whole batch once, not call embed() per text.
+
+        Regression for the observed BAAI/bge-m3 repeated-load storm: generic
+        embed_batch(concurrency=16) called embed() concurrently, causing many
+        simultaneous lazy loads. Local provider must use _embed_local_batch.
+        """
+        llm = self._llm(sample_llm_config)
+        calls = []
+
+        async def fake_batch(texts):
+            calls.append(list(texts))
+            return [[float(i)] for i, _ in enumerate(texts)]
+
+        llm._embed_local_batch = fake_batch
+        out = await llm.embed_batch(["a", "b", "c"], concurrency=16)
+        assert out == [[0.0], [1.0], [2.0]]
+        assert calls == [["a", "b", "c"]]
+
+    @pytest.mark.asyncio
+    async def test_local_embed_batch_failure_returns_empty_slots(self, sample_llm_config):
+        """Local batch failure preserves embed_batch's slot-shape failure contract."""
+        llm = self._llm(sample_llm_config)
+
+        async def boom(texts):
+            raise RuntimeError("local model down")
+
+        llm._embed_local_batch = boom
+        out = await llm.embed_batch(["a", "b", "c"])
+        assert out == [[], [], []]
+
+
+    def test_local_embedder_lazy_load_uses_lock_and_loads_once(self, sample_llm_config):
+        """_get_local_embedder double-checks under a lock and only constructs once."""
+        llm = self._llm(sample_llm_config)
+        with patch("sentence_transformers.SentenceTransformer") as mock_st:
+            first = llm._get_local_embedder()
+            second = llm._get_local_embedder()
+        assert first is second
+        mock_st.assert_called_once_with("test-embed-model", trust_remote_code=True)

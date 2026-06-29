@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -52,6 +53,7 @@ class CoreLLM:
         self.embedding_provider = embedding_provider
         self._db = db
         self._local_embedder = None
+        self._local_embedder_lock = threading.Lock()
 
         import openai
         self._sync_client = openai.OpenAI(
@@ -327,9 +329,26 @@ class CoreLLM:
         module: str = "core",
         concurrency: int = 16,
     ) -> list[list[float]]:
-        """并发批量 embedding。每条独立 try/except — 失败位置返回 []，整体不抛。"""
+        """批量 embedding。
+
+        Remote provider keeps per-text concurrency so one failed API slot returns
+        [] without failing the whole batch. Local provider uses SentenceTransformer
+        true batch encode (one model load + one encode call) to avoid a lazy-load
+        race where N concurrent embed() calls all load BAAI/bge-m3 at once.
+        """
         if not texts:
             return []
+        if self.embedding_provider == "local":
+            try:
+                vectors = await self._embed_local_batch(texts)
+            except Exception:
+                logger.warning("[CoreLLM] local embed_batch failed", exc_info=True)
+                return [[] for _ in texts]
+            if not vectors or len(vectors) != len(texts):
+                logger.warning("[CoreLLM] local embed_batch shape mismatch")
+                return [[] for _ in texts]
+            return vectors
+
         sem = asyncio.Semaphore(max(1, concurrency))
 
         async def _one(t: str) -> list[float]:
@@ -342,24 +361,58 @@ class CoreLLM:
 
         return await asyncio.gather(*[_one(t) for t in texts])
 
+    def _get_local_embedder(self):
+        """Return the local SentenceTransformer, loading it once under a lock.
+
+        Double-checked locking prevents concurrent embed_batch/embed calls from
+        each loading their own BAAI/bge-m3 instance when _local_embedder is None.
+        """
+        if self._local_embedder is None:
+            with self._local_embedder_lock:
+                if self._local_embedder is None:
+                    import os
+                    # 国内网络环境：镜像 + 短超时 + 少重试，避免长时间阻塞
+                    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+                    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "15")
+                    os.environ.setdefault("REQUESTS_MAX_RETRIES", "1")
+                    from sentence_transformers import SentenceTransformer
+                    logger.info(f"[CoreLLM] 加载本地 embedding 模型: {self.embedding_model}")
+                    self._local_embedder = SentenceTransformer(
+                        self.embedding_model,
+                        trust_remote_code=True,
+                    )
+        return self._local_embedder
+
+    async def _embed_local_batch(self, texts: list[str]) -> list[list[float]]:
+        """本地 BGE 批量 embedding：一次加载模型，一次 batch encode。"""
+        loop = asyncio.get_running_loop()
+
+        def _run():
+            model = self._get_local_embedder()
+            vectors = model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=32,
+            )
+            return vectors.tolist()
+
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _run), timeout=120,
+            )
+        except Exception:
+            with self._local_embedder_lock:
+                self._local_embedder = None
+            logger.warning("[CoreLLM] 本地 embedding 批量加载/编码失败（120s），下次调用重试", exc_info=True)
+            return []
+
     async def _embed_local(self, text: str) -> list[float]:
         """本地 BGE 模型 embedding（sentence-transformers）。失败时下次重试。"""
         loop = asyncio.get_running_loop()
 
         def _run():
-            if self._local_embedder is None:
-                import os
-                # 国内网络环境：镜像 + 短超时 + 少重试，避免长时间阻塞
-                os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-                os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "15")
-                os.environ.setdefault("REQUESTS_MAX_RETRIES", "1")
-                from sentence_transformers import SentenceTransformer
-                logger.info(f"[CoreLLM] 加载本地 embedding 模型: {self.embedding_model}")
-                self._local_embedder = SentenceTransformer(
-                    self.embedding_model,
-                    trust_remote_code=True,
-                )
-            return self._local_embedder.encode(
+            model = self._get_local_embedder()
+            return model.encode(
                 text, normalize_embeddings=True,
             ).tolist()
 
@@ -368,7 +421,8 @@ class CoreLLM:
                 loop.run_in_executor(None, _run), timeout=120,
             )
         except Exception:
-            self._local_embedder = None
+            with self._local_embedder_lock:
+                self._local_embedder = None
             logger.warning("[CoreLLM] 本地 embedding 模型加载超时/失败（120s），下次调用重试", exc_info=True)
             return []
 

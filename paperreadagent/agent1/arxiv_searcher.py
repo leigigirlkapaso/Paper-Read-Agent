@@ -7,14 +7,16 @@ agent1/arxiv_searcher.py
     arxiv_id, title, authors, published, abstract, pdf_url, arxiv_url
 
 特性：
-  - 多条 query 逐一检索，去重后合并
+  - 多条 query 并行检索（ThreadPoolExecutor），去重后合并
   - 若结果不足 min_results，自动从 keywords 生成 fallback query 补充
   - 每条 query 记录命中数，方便分析
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -38,6 +40,7 @@ class PaperMeta:
     venue: str = ""                 # 发表场合
     code_url: str = ""              # 代码链接
     citation_count: int = 0         # 引用数
+    discovered_via: str = ""        # 来源溯源，如 "snowball:2301.07041:backward"
 
 
 def search_papers(
@@ -46,13 +49,14 @@ def search_papers(
     keywords: list[str] | None = None,
     min_results: int = 200,
     max_queries: int = 10,          # 最多执行的 query 数量，避免触发限流
-    query_delay: float = 8.0,       # 每条 query 之间的等待秒数（防 429）
+    query_delay: float = 8.0,       # 批次启动间隔秒数（并行检索时用于错峰）
     rate_limit_backoff: float = 90.0, # 遇到 429 时额外等待秒数
     sort_by: str = "date",          # "date"=按发表时间降序 | "relevance"=按相关性
-    min_year: int = 0,              # 过滤早于此年的论文（0=不过滤）
+    min_year: int = 0,              # 过滤早于此年份的论文（0=不过滤）
+    page_delay: float = 2.0,        # arxiv.Client 翻页间隔秒数（可配置）
 ) -> list[PaperMeta]:
     """
-    对多条 query 分别检索 arxiv，去重后返回候选论文列表。
+    对多条 query 并行检索 arxiv，去重后返回候选论文列表。
 
     Args:
         queries:             检索查询串列表（来自 keyword_extractor）
@@ -60,10 +64,11 @@ def search_papers(
         keywords:            关键词列表，用于 fallback 兜底
         min_results:         期望的最小候选总量，不足时触发 fallback 扩展
         max_queries:         最多执行的 query 数量（防止查询过多触发限流）
-        query_delay:         每条 query 之间的礼貌等待秒数
+        query_delay:         批次启动间隔秒数（并行执行时用于错峰）
         rate_limit_backoff:  遇到 HTTP 429 后额外等待秒数再继续
         sort_by:             排序方式："date"=按发表时间降序（最新优先）| "relevance"=相关性
         min_year:            过滤早于此年份的论文（0=不过滤）
+        page_delay:          翻页间隔秒数（arxiv.Client 内部 delay_seconds）
 
     Returns:
         去重后的 PaperMeta 列表
@@ -84,22 +89,29 @@ def search_papers(
     per_query_max = min(max_results, 300)
     page_size = min(per_query_max, 100)
 
-    seen_ids: set[str] = set()
-    papers: list[PaperMeta] = []
-    query_stats: list[tuple[str, int]] = []  # (query, hits)
-    queries_run: int = 0             # 已执行 query 计数
+    active_queries = queries[:max_queries]
+    if len(queries) > max_queries:
+        logger.info(
+            f"[AGENT1] 共 {len(queries)} 条 query，限流保护截取前 {max_queries} 条"
+        )
 
-    client = arxiv.Client(
-        page_size=page_size,       # 每页 100 条，超出时自动翻页
-        delay_seconds=5,           # 翻页间隔（分页请求需更礼貌）
-        num_retries=1,             # 失败只重试1次，429 后由外层 backoff 处理
-    )
+    query_stats: list[tuple[str, int]] = []
+    stats_lock = threading.Lock()
 
-    def _run(query: str) -> int:
-        """执行单条 query，返回新增篇数；遇 429 返回 -1（调用方处理）。"""
-        nonlocal queries_run
-        logger.info(f"[AGENT1] arxiv 检索: {query!r}")
+    def _run_isolated(query: str, delay_before: float = 0) -> tuple[str, list[PaperMeta], int]:
+        """在独立线程中执行单条 query，返回 (query, papers, n_added)。"""
+        if delay_before > 0:
+            time.sleep(delay_before)
+
+        client = arxiv.Client(
+            page_size=page_size,
+            delay_seconds=page_delay,
+            num_retries=3,
+        )
+        local_papers: list[PaperMeta] = []
         n_added = 0
+
+        logger.info(f"[AGENT1] arxiv 检索: {query!r}")
         search = arxiv.Search(
             query=query,
             max_results=per_query_max,
@@ -110,15 +122,12 @@ def search_papers(
             for result in client.results(search):
                 arxiv_id = result.entry_id.split("/abs/")[-1]
                 clean_id = arxiv_id.split("v")[0]   # 去掉版本号
-                if clean_id in seen_ids:
-                    continue
                 # ── 年份过滤 ────────────────────────────────
                 if min_year > 0 and result.published:
                     if result.published.year < min_year:
-                        continue   # 跳过太旧的论文
+                        continue
                 # ────────────────────────────────────────────
-                seen_ids.add(clean_id)
-                papers.append(
+                local_papers.append(
                     PaperMeta(
                         arxiv_id=clean_id,
                         title=result.title.replace("\n", " ").strip(),
@@ -133,50 +142,74 @@ def search_papers(
                     )
                 )
                 n_added += 1
-            query_stats.append((query, n_added))
-            queries_run += 1
-            return n_added
+            with stats_lock:
+                query_stats.append((query, n_added))
+            return (query, local_papers, n_added)
         except Exception as e:
             err_str = str(e)
             if "429" in err_str:
                 logger.warning(
-                    f"[AGENT1] HTTP 429 限流，等待 {rate_limit_backoff:.0f}s 后继续..."
+                    f"[AGENT1] HTTP 429 限流 ({query!r})，等待 {rate_limit_backoff:.0f}s..."
                 )
                 time.sleep(rate_limit_backoff)
-                query_stats.append((query, 0))
-                return -1   # 跳过本条，继续后续 query
             else:
                 logger.error(f"[AGENT1] 检索失败 ({query!r}): {e}")
+            with stats_lock:
                 query_stats.append((query, 0))
-                return 0
+            return (query, [], 0)
 
-    def _run_with_delay(query: str, first: bool = False) -> int:
-        """执行带前置等待的单条 query。"""
-        if not first:
-            logger.info(f"[AGENT1] 等待 {query_delay:.0f}s（防限流）...")
-            time.sleep(query_delay)
-        return _run(query)
+    # ── 第一阶段：并行执行 LLM 生成的 query ─────────────────
+    n_queries = len(active_queries)
+    max_workers = min(n_queries, 2)  # arxiv 限流极其严格，2 并发为上限
+    logger.info(
+        f"[AGENT1] 并行检索 {n_queries} 条 query（workers={max_workers}, page_delay={page_delay}s）"
+    )
 
-    # ── 第一阶段：执行 LLM 生成的 query（最多 max_queries 条）─
-    active_queries = queries[:max_queries]
-    if len(queries) > max_queries:
-        logger.info(
-            f"[AGENT1] 共 {len(queries)} 条 query，限流保护截取前 {max_queries} 条"
-        )
-    for i, query in enumerate(active_queries):
-        _run_with_delay(query, first=(i == 0))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_run_isolated, query, i * query_delay / max_workers): query
+            for i, query in enumerate(active_queries)
+        }
+        batch_results: list[tuple[str, list[PaperMeta], int]] = []
+        for future in concurrent.futures.as_completed(futures):
+            batch_results.append(future.result())
+
+    # ── 线程安全去重合并 ──────────────────────────────────────
+    seen_ids: set[str] = set()
+    papers: list[PaperMeta] = []
+    for _query, local_papers, _n in batch_results:
+        for p in local_papers:
+            if p.arxiv_id not in seen_ids:
+                seen_ids.add(p.arxiv_id)
+                papers.append(p)
 
     # ── 第二阶段：兜底扩展（结果不足 + 还有 query 配额时）────
-    if len(papers) < min_results and keywords and queries_run < max_queries:
+    if len(papers) < min_results and keywords:
         fallback_queries = _build_fallback_queries(keywords)
-        remaining_slots = max_queries - queries_run
-        fallback_queries = fallback_queries[:remaining_slots]
-        logger.info(
-            f"[AGENT1] 候选仅 {len(papers)} 篇 < {min_results}，"
-            f"启动兜底扩展：{len(fallback_queries)} 条 fallback query"
-        )
-        for query in fallback_queries:
-            _run_with_delay(query)
+        remaining_slots = max_queries - n_queries
+        if remaining_slots > 0:
+            fallback_queries = fallback_queries[:remaining_slots]
+            logger.info(
+                f"[AGENT1] 候选仅 {len(papers)} 篇 < {min_results}，"
+                f"启动兜底扩展：{len(fallback_queries)} 条 fallback query"
+            )
+
+            n_fb = len(fallback_queries)
+            fb_workers = min(n_fb, 2)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=fb_workers) as executor:
+                fb_futures = {
+                    executor.submit(_run_isolated, query, i * 0.5): query
+                    for i, query in enumerate(fallback_queries)
+                }
+                fb_results: list[tuple[str, list[PaperMeta], int]] = []
+                for future in concurrent.futures.as_completed(fb_futures):
+                    fb_results.append(future.result())
+
+            for _query, local_papers, _n in fb_results:
+                for p in local_papers:
+                    if p.arxiv_id not in seen_ids:
+                        seen_ids.add(p.arxiv_id)
+                        papers.append(p)
 
     # ── 汇总统计 ────────────────────────────────────────────
     _log_query_stats(query_stats)

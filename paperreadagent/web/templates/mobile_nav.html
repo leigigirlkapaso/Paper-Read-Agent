@@ -1,5 +1,4 @@
-{% if request.state.is_mobile %}
-<nav class="mobile-nav">
+<nav class="mobile-nav mobile-only">
     <a href="/projects/" class="tab-item {{ 'active' if request.url.path.startswith('/projects') or (not request.url.path.startswith('/thinker') and not request.url.path.startswith('/ideator') and not request.url.path.startswith('/settings') and not request.url.path.startswith('/login')) }}">
         <span class="tab-icon">🏠</span>
         <span>首页</span>
@@ -17,4 +16,3 @@
         <span>设置</span>
     </a>
 </nav>
-{% endif %}

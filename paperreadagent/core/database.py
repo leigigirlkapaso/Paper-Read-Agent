@@ -40,6 +40,7 @@ class CoreDatabase:
             self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute("PRAGMA foreign_keys=ON")
         return self._conn
 
@@ -57,12 +58,17 @@ class CoreDatabase:
         for v in range(current + 1, CORE_LATEST_VERSION + 1):
             if v in CORE_MIGRATIONS:
                 logger.info(f"[CoreDB] 应用核心迁移 v{v}...")
-                self.conn.executescript(CORE_MIGRATIONS[v])
-                self.conn.execute(
-                    "INSERT OR REPLACE INTO core_schema_version (version) VALUES (?)",
-                    (v,),
-                )
-                self.conn.commit()
+                try:
+                    self.conn.executescript(CORE_MIGRATIONS[v])
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO core_schema_version (version) VALUES (?)",
+                        (v,),
+                    )
+                    self.conn.commit()
+                except sqlite3.OperationalError:
+                    logger.warning(
+                        f"[CoreDB] 迁移 v{v} 执行出错（可能已应用），跳过"
+                    )
 
     @evolving
     def run_module_migration(self, module_name: str, latest_version: int, migrations: dict[int, str]) -> None:

@@ -1,0 +1,18 @@
+## 研究 Idea
+{{ spark_content }}
+
+## 深化研究草稿
+{% if depth_content %}{{ depth_content }}{% else %}（无深化草稿，证据较薄弱）{% endif %}
+
+## 证据链（跨源关联）
+{% if cross_links %}{% for link in cross_links %}- [{{ link.link_type }}] {{ link.source_a_type }}#{{ link.source_a_id }} ↔ {{ link.source_b_type }}#{{ link.source_b_id }}: {{ link.reasoning }}
+{% endfor %}{% else %}（无证据链）{% endif %}
+
+## 团队讨论记忆（圆桌结论）
+{% if team_memory %}{% for m in team_memory %}- [{{ m.memory_type }}] {{ m.content }}
+{% endfor %}{% else %}（无圆桌讨论）{% endif %}
+
+## 圆桌大纲（秘书整理，含讨论收敛结果）
+{% if outline_markdown %}{{ outline_markdown }}{% else %}（无大纲）{% endif %}
+
+请基于以上上下文，输出 6 维度项目可行性书（严格 JSON）。

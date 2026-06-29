@@ -5,7 +5,7 @@ modules/thinker/tests/test_chat.py
 
 import pytest
 from paperreadagent.utils.json_utils import extract_json_list
-from modules.thinker.chat import ChatEngine
+from paperreadagent.modules.thinker.chat import ChatEngine
 
 
 class TestParseResolutionJSON:

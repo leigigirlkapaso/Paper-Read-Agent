@@ -9,6 +9,10 @@ server:
 #  所有参数集中在此，运行前请先填写 llm 和 research 两节
 # ============================================================
 
+# ── 全局联系邮箱（用于所有 HTTP UA 与 Unpaywall API）
+# 强烈建议填写真实邮箱以降低 DBLP/arxiv 限流概率。
+contact_email: ""
+
 # ── 0. 核心层配置（模块化平台共享）───────────────────────────
 core:
   llm:
@@ -53,45 +57,74 @@ research:
 
 
 
-  max_search_results: 200      # arxiv 每条 query 返回的候选文献数量上限（<=100 避免分页）
+  max_search_results: 300      # arxiv 每条 query 返回的候选文献数量上限（最大 300）
   min_search_results: 200      # 期望的最小候选总量；不足时自动启用 fallback query 补充
-  max_queries: 8               # 最多执行的 query 数量（防止请求过多触发 arxiv 限流）
-  query_delay: 8               # 每条 query 之间的等待秒数（防限流，建议 6~10）
+  max_queries: 16              # 最多执行的 query 数量（匹配 LLM 4角度×4维度=16条）
+  query_delay: 5               # 每条 query 之间的等待秒数（arxiv 限流严格，需要较大间隔）
+  arxiv_page_delay: 2          # arxiv 翻页间隔秒数（arxiv.Client 内部 delay_seconds）
   max_download_papers: 200     # 经 AGENT1 筛选后，最多下载的文献数量
   relevance_threshold: 0.8    # 相关性分数阈值（0~1），低于此值的文献被过滤
   search_batch_size: 5       # AGENT1 筛选时每批处理的文献数量（控制 token）
-  filter_max_concurrent: 100 # AGENT1 筛选打分并发上限（批次级别）
+  filter_max_concurrent: 200 # AGENT1 筛选打分并发上限（批次级别）
   sort_by: "date"             # 检索结果排序方式：date=按发表时间降序（最新优先）| relevance=按相关性
   min_year: 2024              # 过滤掉早于此年份的论文（设为 0 则不过滤）
+
+  # 引文滚雪球（召回增强）：从高相关种子双向扩展 1 跳引文
+  enable_citation_snowball: true      # 总开关
+  snowball_seed_count: 8              # 取筛选后 top-N 作种子
+  snowball_per_seed_per_direction: 25 # 每种子 backward/forward 各最多取多少
+  snowball_max_neighbors: 300         # 去重前邻居全局上限（控成本）
+  snowball_extra_slots: 10            # 额外精读名额（20 -> 30）
+  snowball_quality_weight: 0.15       # 重打分时引用数加权（仅作用于滚雪球候选）
+
+  # Hybrid 粗排（dense bge-m3 + BM25 RRF）：在 LLM 精排前削减候选池
+  enable_hybrid_prefilter: true       # 总开关
+  prefilter_top_k: 150                # 粗排后送进 LLM 精排的候选数
+  prefilter_min_input: 60             # 候选数 ≤ 此值则跳过粗排
+  prefilter_dense_weight: 0.5         # RRF 内 dense 权重（0=纯BM25, 1=纯dense, 0.5=对等）
+  prefilter_embed_concurrency: 16     # embed 并发上限
+  prefilter_passage_chars: 1500       # passage 中 abstract 的截断字符数
 
 # ── 3. 并发参数 ─────────────────────────────────────────────
 concurrency:
   max_concurrent: 100         # AGENT2 最大并发数
 
 # ── 4. 多平台检索来源配置 ────────────────────────────────────
-# 可自由开关各平台；arxiv 默认开启，其余默认关闭（避免初次运行时间过长）
+# 三平台检索：arxiv + OpenAlex + DBLP，覆盖所有学科
+# arxiv: CS/物理/数学主力源（免费，无需 API Key）
+# OpenAlex: 2.5 亿+ 文献兜底（免费，无需 API Key）
+# DBLP: CS 顶会/期刊（默认关闭，HCI/CHI/UIST 等非 arXiv 学科建议开启）
 sources:
   arxiv: true                  # arxiv 检索（免费，无需 API Key）
 
-  semantic_scholar: false       # Semantic Scholar（覆盖 NeurIPS/ICML/CVPR 等所有顶会）
-  s2_api_key: ""               # 可选；免费申请：https://www.semanticscholar.org/product/api
-  s2_max_per_query: 100        # 每条 query 最多取 100 篇
-  s2_query_delay: 3.0          # 每条 query 间隔秒数（免费限速约 1 req/s）
-
-  papers_with_code: false       # Papers With Code（ML 专属，含代码链接）
-  pwc_max_per_query: 100       # 每条 query 最多取 100 篇
-  pwc_query_delay: 2.0         # 每条 query 间隔秒数
-
-  openalex: true               # OpenAlex（2 亿+ 文献，完全免费，适合兜底扩大检索面）
+  openalex: true               # OpenAlex（2.5 亿+ 文献，免费兜底）
   oa_max_per_query: 100        # 每条 query 最多取 100 篇
   oa_query_delay: 2.0          # 每条 query 间隔秒数
 
-  dblp: false                   # DBLP（CS 领域顶会/期刊索引，覆盖 HCI 等非 arXiv 学科）
+  dblp: true                   # DBLP（CS 顶会/期刊，覆盖 HCI 等非 arXiv 学科）
   dblp_max_per_query: 100      # 每条 query 最多取 100 篇（上限 1000）
-  dblp_query_delay: 2.0        # 每条 query 间隔秒数
+  dblp_query_delay: 3.0        # 每条 query 间隔秒数（DBLP 限流严格，<3s 会触发 IP 拉黑）
+
+  pmc: true                     # Europe PMC（生物医学，4200 万+ 论文，免费无需 Key）
+  pmc_max_per_query: 100        # 每条 query 最多取 100 篇
+  pmc_query_delay: 1.0          # 每条 query 间隔秒数
+
+  openreview: true              # OpenReview（CoRL/ICLR/NeurIPS/ICML，含 reject 论文）
+  or_max_per_query: 50
+  or_query_delay: 1.0           # 限流由 rate_limiter 接管（参数保留兼容）
+
+  crossref: true                # CrossRef（DOI 全覆盖：IEEE/IJRR/Sage/Springer/Elsevier）
+  crossref_max_per_query: 100
+  crossref_query_delay: 0.5
+
+  # CORE API key（免费申请：https://core.ac.uk/services/api）—— abstract_resolver 第 3 层 fallback
+  # 留空则禁用 CORE 层；OpenAlex + S2（前两层）仍正常工作
+  core_api_key: ""
 
 # ── 5. 多源下载配置 ────────────────────────────────────────
 downloader:
+  max_concurrent: 4                # arxiv 限流严格，4 是稳定上限（请勿调大）
+
   # Unpaywall: 需要提供邮箱以获得免费 API 访问
   # 免费申请：https://unpaywall.org/products/api
   unpaywall_email: ""              # 留空则跳过 Unpaywall

@@ -71,7 +71,10 @@ class AgentTeam:
 
     def __init__(self, *, spark_id, spark_content, seats, llm,
                  team_memory, graduation, arbiter, tool_registry,
-                 source_context: str = ""):
+                 source_context: str = "",
+                 facts_block: str = "",
+                 stream_hub=None,
+                 rt_id: int = 0):
         self.spark_id = spark_id
         self.spark_content = spark_content
         self.seats: dict[str, AgentSeat] = {s.seat_id: s for s in seats}
@@ -81,6 +84,9 @@ class AgentTeam:
         self._arbiter = arbiter
         self._tool_registry = tool_registry
         self._source_context = source_context
+        self.facts_block = facts_block
+        self._stream_hub = stream_hub
+        self._rt_id = rt_id
         self.round_number = 0
         self.messages: list[dict] = []
         self._warm_context: str = ""
@@ -194,34 +200,92 @@ class AgentTeam:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": self._build_agent_user_prompt(seat, question, mentioned, round_context)},
         ]
+        # gen=0.5 (needs creativity), rev/arb=0.3 (needs precision)
+        _temp = 0.5 if seat.seat_id == "gen" else 0.3
 
-        try:
-            raw = await self._llm.chat(
-                model_role=seat.role,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=32768,
+        # ── Fallback path: legacy non-streaming ─────────────────
+        if self._stream_hub is None:
+            try:
+                raw = await self._llm.chat(
+                    model_role=seat.role, messages=messages,
+                    temperature=_temp, max_tokens=32768,
+                )
+            except Exception:
+                logger.warning("[AgentTeam] _agent_speak failed for %s", seat.seat_id, exc_info=True)
+                return self._record_message(
+                    sender_type="system", sender_name="system",
+                    sender_role=None, message_type="answer",
+                    content=f"[{_ROLE_LABELS.get(seat.seat_id, seat.seat_id)} 暂时无法回应，请稍后重试]",
+                )
+            self._check_three_section_format(raw, seat.seat_id)
+            seat.consume_quota(len(raw))
+            return self._record_message(
+                sender_type="model", sender_name=seat.seat_id,
+                sender_role=seat.role, message_type="answer",
+                content=raw, metadata={"tokens": len(raw) // 2},
             )
+
+        # ── Streaming path ──────────────────────────────────────
+        chunks: list[str] = []
+        try:
+            async for delta in self._llm.chat_stream(
+                model_role=seat.role, messages=messages,
+                temperature=_temp, max_tokens=32768,
+            ):
+                chunks.append(delta)
+                await self._stream_hub.publish(self._rt_id, {
+                    "type": "delta",
+                    "seat_id": seat.seat_id,
+                    "role": seat.role,
+                    "round_number": self.round_number,
+                    "delta": delta,
+                })
         except Exception:
-            logger.warning("[AgentTeam] _agent_speak failed for %s", seat.seat_id, exc_info=True)
+            logger.warning("[AgentTeam] streaming failed for %s", seat.seat_id, exc_info=True)
+            partial = "".join(chunks)
+            # Best-effort error event: if publish fails, log and continue;
+            # the fallback message must still be recorded so the agent
+            # doesn't silently disappear from the roundtable.
+            try:
+                await self._stream_hub.publish(self._rt_id, {
+                    "type": "error",
+                    "seat_id": seat.seat_id,
+                    "role": seat.role,
+                    "round_number": self.round_number,
+                    "partial": partial,
+                })
+            except Exception:
+                logger.debug("[AgentTeam] error event publish failed for %s",
+                            seat.seat_id, exc_info=True)
             return self._record_message(
                 sender_type="system", sender_name="system",
                 sender_role=None, message_type="answer",
                 content=f"[{_ROLE_LABELS.get(seat.seat_id, seat.seat_id)} 暂时无法回应，请稍后重试]",
             )
 
+        raw = "".join(chunks)
+        self._check_three_section_format(raw, seat.seat_id)
         seat.consume_quota(len(raw))
-
-        return self._record_message(
+        msg = self._record_message(
             sender_type="model", sender_name=seat.seat_id,
             sender_role=seat.role, message_type="answer",
             content=raw, metadata={"tokens": len(raw) // 2},
         )
+        await self._stream_hub.publish(self._rt_id, {
+            "type": "end",
+            "seat_id": seat.seat_id,
+            "role": seat.role,
+            "round_number": self.round_number,
+            "raw": raw,
+            "msg_id": len(self.messages),  # position index, not DB row id
+        })
+        return msg
 
     def _build_agent_system_prompt(self, seat: AgentSeat) -> str:
         identity_prompt = self._llm.load_prompt(
             "ideator", f"agent_identity_{seat.seat_id}",
             tools_list=self._format_tools_for_seat(seat),
+            facts_block=self.facts_block,
         )
         memory_text = self._memory.format_for_context(self.spark_id) if self._memory else ""
         source_block = f"\n\n---\n来源上下文:\n{self._source_context}" if self._source_context else ""
@@ -255,6 +319,24 @@ class AgentTeam:
             lines.append(f"[{sender}] {content}")
         return "\n\n".join(lines)
 
+    def _check_three_section_format(self, text: str, role: str) -> None:
+        """Soft validation: log warning if rev reply missing 3-段式 markers.
+        Does not retry, raise, or modify the message. arb/gen/PASS/empty skip."""
+        if role not in ("rev1", "rev2", "rev3"):
+            return
+        stripped = text.strip()
+        if not stripped:
+            return  # empty LLM response: don't fire spurious warning
+        if stripped == "PASS":
+            return
+        required = ("【问题点】", "【事实依据】", "【建议修复】")
+        missing = [m for m in required if m not in text]
+        if missing:
+            logger.warning(
+                "[AgentTeam] rev %s 未遵守 3 段式 (缺 %s): %s",
+                role, "/".join(missing), text[:80].replace("\n", " "),
+            )
+
     async def _collect_interjections(self, mentioned: list[str], question: str) -> list[dict]:
         async def _interject(seat):
             try:
@@ -266,7 +348,7 @@ class AgentTeam:
                 raw = await self._llm.chat(
                     model_role=seat.role,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.5, max_tokens=2048,
+                    temperature=0.3, max_tokens=2048,
                 )
                 content = raw[:_MAX_INTERJECTION_CHARS]
                 return self._record_message(
@@ -349,13 +431,15 @@ class AgentTeamManager:
     """管理多个 AgentTeam 实例，替代 RoundtableManager。"""
 
     def __init__(self, *, llm, data_access,
-                 tool_registry, team_memory, graduation, arbiter):
+                 tool_registry, team_memory, graduation, arbiter,
+                 secretary=None):
         self._llm = llm
         self._data = data_access
         self._tool_registry = tool_registry
         self._team_memory = team_memory
         self._graduation = graduation
         self._arbiter = arbiter
+        self._secretary = secretary
         self._teams: dict[int, AgentTeam] = {}
 
     def create_team(self, *, spark_id: int, spark_content: str,
@@ -377,6 +461,28 @@ class AgentTeamManager:
         team_graduation = GraduationManager(self._data._core.db.conn, self._team_memory)
 
         seats = create_default_seats()
+
+        # Collect facts layer from spark-linked papers' structured extractions,
+        # render to a markdown block, inject into every agent's identity prompt.
+        # Best-effort: any failure → facts_block='' → roundtable runs as before.
+        facts_block = ""
+        if spark_id:
+            try:
+                facts = self._data.gather_facts_for_spark(spark_id, max_papers=8)
+                if facts:
+                    facts_block = self._llm.load_prompt(
+                        "ideator", "_facts_block", facts=facts,
+                    )
+            except Exception:
+                logger.warning(
+                    "[AgentTeamManager] facts_block build failed for spark %s",
+                    spark_id, exc_info=True,
+                )
+
+        # Streaming hub: lazy import to avoid circular reference at module load
+        from .stream_hub import get_stream_hub
+        stream_hub = get_stream_hub()
+
         team = AgentTeam(
             spark_id=spark_id,
             spark_content=spark_content_override or spark_content,
@@ -387,9 +493,32 @@ class AgentTeamManager:
             arbiter=self._arbiter,
             tool_registry=self._tool_registry,
             source_context=source_context,
+            facts_block=facts_block,
+            stream_hub=stream_hub,
+            rt_id=rt_id,
         )
         self._teams[rt_id] = team
         return rt_id
+
+    async def after_round(self, rt_id: int) -> None:
+        """Called by the route after team.start_round() completes.
+
+        Triggers the secretary to update the project outline for this round.
+        Best-effort: failures are logged + swallowed. Idempotent: safe when
+        secretary is None or team is unknown.
+        """
+        if self._secretary is None:
+            return
+        team = self._teams.get(rt_id)
+        if team is None:
+            return
+        try:
+            await self._secretary.update(rt_id, team=team)
+        except Exception:
+            logger.warning(
+                "[AgentTeamManager] secretary.update failed for rt=%s",
+                rt_id, exc_info=True,
+            )
 
     def get_team(self, rt_id: int) -> AgentTeam | None:
         return self._teams.get(rt_id)
@@ -403,6 +532,19 @@ class AgentTeamManager:
             from datetime import datetime
             self._data.update_roundtable(rt_id, status="closed",
                                           closed_at=datetime.now().isoformat())
+
+        # Streaming hub teardown: terminate all SSE subscribers of this rt_id
+        from .stream_hub import get_stream_hub
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(get_stream_hub().close_rt(rt_id))
+        except RuntimeError:
+            # No running loop (called from sync context) — subscribers will
+            # eventually time out via the 15s keepalive idle. Don't crash.
+            logger.debug(
+                "[AgentTeamManager] no running loop, skip stream hub close for rt=%s",
+                rt_id,
+            )
 
     def _resolve_source_context(self, spark_id: int,
                                  source_refs: list[dict]) -> str:

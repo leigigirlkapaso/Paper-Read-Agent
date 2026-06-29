@@ -55,7 +55,7 @@ CrossRecall S0:
 
 ## 关键设计决策
 
-- `IdeatorLLM`：封装 `core.llm`，支持 `model=<override>` + `response_format` + `max_tokens`
+- `IdeatorLLM`：适配 CoreLLM 到 `chat(model_role, messages, ...)` 接口。CoreLLM 不支持 model 覆盖，所有坐席统一使用 deepseek-v4-pro。
 - `_chat_with_retry`：3 次重试（含 JSON 解析失败），错误反馈注入对话历史
 - `_clean_json`：去 markdown 代码块再解析；`response_format={"type":"json_object"}` 已移除
 - Semaphore(2) debating, Semaphore(5) scoring/spark_gen

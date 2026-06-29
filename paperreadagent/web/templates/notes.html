@@ -31,7 +31,8 @@
         </div>
         <div class="text-sm text-gray-600 leading-relaxed prose prose-sm max-w-none line-clamp-4"
              id="note-{{ n.id }}"></div>
-        <script>document.getElementById('note-{{ n.id }}').innerHTML = DOMPurify.sanitize(marked.parse({{ n.content[:500] | tojson }}));</script>
+        <script type="application/json" id="note-payload-{{ n.id }}">{{ n.content[:500] | tojson }}</script>
+        <script>document.getElementById('note-{{ n.id }}').innerHTML = DOMPurify.sanitize(marked.parse(JSON.parse(document.getElementById('note-payload-{{ n.id }}').textContent)));</script>
     </div>
     {% endfor %}
 </div>

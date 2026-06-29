@@ -14,7 +14,7 @@ def core():
 
 
 def test_register_returns_valid_module_info(core):
-    from modules.thinker import register
+    from paperreadagent.modules.thinker import register
 
     info = register(core)
     assert isinstance(info, ModuleInfo)
@@ -26,7 +26,7 @@ def test_register_returns_valid_module_info(core):
 
 def test_register_is_idempotent(core):
     """重复调用 register 不报错。"""
-    from modules.thinker import register
+    from paperreadagent.modules.thinker import register
 
     register(core)
     register(core)
@@ -35,7 +35,7 @@ def test_register_is_idempotent(core):
 
 
 def test_module_appears_in_core_registry(core):
-    from modules.thinker import register
+    from paperreadagent.modules.thinker import register
 
     register(core)
     mod = core.get_module("thinker")

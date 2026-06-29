@@ -146,8 +146,8 @@ class KnowledgeLayer:
         if embedding:
             self._write_chunks_to_lance(note_id, source_module, content, embedding)
         elif len(content) > _CHUNK_SIZE:
-            # Content present but no embedding — store single-chunk stub for future re-index
-            pass
+            # Content too large for embedding; store stub for future re-index
+            logger.warning(f"[Knowledge] Note {note_id}: content too large ({len(content)} chars), no embedding stored")
 
         return note_id
 
@@ -166,7 +166,7 @@ class KnowledgeLayer:
             try:
                 self._lance_table.delete(f"note_id = {note_id}")
             except Exception:
-                pass
+                logger.warning(f"[Knowledge] LanceDB delete failed for note {note_id}", exc_info=True)
 
             # For notes with pre-computed embedding (single vector), store as chunk 0
             rows = [{
@@ -194,7 +194,7 @@ class KnowledgeLayer:
             try:
                 self._lance_table.delete(f"note_id = {note_id}")
             except Exception:
-                pass
+                logger.warning(f"[Knowledge] LanceDB multi delete failed for note {note_id}", exc_info=True)
 
             rows = []
             for i, emb in enumerate(chunk_embeddings):
@@ -262,8 +262,9 @@ class KnowledgeLayer:
             q = self._lance_table.search(query_vec).limit(max(top_k * 3, 30))
 
             if source_module:
-                # LanceDB SQL-like filter
-                q = q.where(f"source_module = '{source_module}'", prefilter=True)
+                # LanceDB SQL-like filter — sanitize single quotes in module name
+                safe_module = source_module.replace("'", "''")
+                q = q.where(f"source_module = '{safe_module}'", prefilter=True)
 
             results = q.to_list()
 
@@ -412,7 +413,7 @@ class KnowledgeLayer:
             try:
                 self._lance_table.delete("note_id >= 0")
             except Exception:
-                pass
+                logger.warning("[Knowledge] LanceDB clear failed during migration", exc_info=True)
 
             data = []
             batch = []
@@ -444,14 +445,13 @@ class KnowledgeLayer:
 
     @evolving
     def update_note(self, note_id: int, **kwargs) -> None:
+        _ALLOWED_COLS = {"content", "content_type", "source_ref", "tags", "metadata", "embedding"}
         sets: list[str] = []
         params: list = []
         for key, val in kwargs.items():
-            col = {
-                "content": "content", "content_type": "content_type",
-                "source_ref": "source_ref", "tags": "tags",
-                "metadata": "metadata", "embedding": "embedding",
-            }.get(key, key)
+            if key not in _ALLOWED_COLS:
+                raise ValueError(f"Cannot update column: {key}")
+            col = key
             sets.append(f"{col} = ?")
             if isinstance(val, (list, dict)):
                 params.append(_safe_dumps(val))
@@ -482,7 +482,7 @@ class KnowledgeLayer:
                     try:
                         self._lance_table.delete(f"note_id = {note_id}")
                     except Exception:
-                        pass
+                        logger.warning(f"[Knowledge] LanceDB cleanup failed for note {note_id}", exc_info=True)
 
     @evolving
     def delete_by_module(self, source_module: str) -> int:

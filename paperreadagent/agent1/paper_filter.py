@@ -53,7 +53,7 @@ def filter_papers(
     max_download_papers: int = 20,
     batch_size: int = 10,
     quality_weight: float = 0.0,
-    max_concurrent: int = 100,
+    max_concurrent: int = 200,
 ) -> list[PaperMeta]:
     """
     对候选论文批量打分，返回相关性达标的论文（按分数降序）。
@@ -71,6 +71,8 @@ def filter_papers(
     Returns:
         筛选后的 PaperMeta 列表（已填充 relevance_score）
     """
+    if not papers:
+        return []
     total_batches = (len(papers) + batch_size - 1) // batch_size
     workers = min(max_concurrent, total_batches)
     logger.info(
@@ -92,22 +94,12 @@ def filter_papers(
         for f in as_completed(futures):
             f.result()  # 异常已在 _score_batch 内部处理
 
-    # 边界论文重试打分：阈值 -0.1 以内再打 2 次，取最高分（并行）
+    # 边界论文批量重试打分：阈值 -0.1 以内所有论文一起送给 LLM 再打 2 次，取最高分
     borderline = [p for p in papers
                   if relevance_threshold - 0.1 <= p.relevance_score < relevance_threshold]
     if borderline:
-        logger.info(f"[AGENT1-B] {len(borderline)} 篇边界论文，重试打分（最多 2 次）...")
-        with ThreadPoolExecutor(max_workers=min(workers, len(borderline))) as ex:
-            futures = {
-                ex.submit(_retry_borderline, p, topic, llm, relevance_threshold): p
-                for p in borderline
-            }
-            for f in as_completed(futures):
-                try:
-                    best = f.result()
-                    futures[f].relevance_score = best
-                except Exception:
-                    logger.error("[AGENT1-B] 边界重试异常", exc_info=True)
+        logger.info(f"[AGENT1-B] {len(borderline)} 篇边界论文，批量重试打分（最多 2 次）...")
+        _retry_borderline_batch(borderline, topic, llm, relevance_threshold)
 
     # 质量加权混合
     if quality_weight > 0:
@@ -143,38 +135,52 @@ def _score_batch(
         f"## 待评估论文（共 {len(batch)} 篇）\n{papers_text}"
     )
 
+    scored_indices: set[int] = set()
     try:
-        raw, _usage = llm.chat(user_prompt=user_prompt, system_prompt=_SYSTEM_PROMPT)
+        raw, _ = llm.chat(user_prompt=user_prompt, system_prompt=_SYSTEM_PROMPT)
         scores = _parse_scores(raw)
         for item in scores:
             idx = item["id"] - 1
             if 0 <= idx < len(batch):
                 batch[idx].relevance_score = float(item["score"])
+                scored_indices.add(idx)
         logger.info(
             f"[AGENT1-B] 批次 {offset + 1}~{offset + len(batch)} 打分完成"
         )
     except Exception as e:
-        logger.error(f"[AGENT1-B] 批次打分失败，全批赋予中性分 0.5: {e}")
-        for p in batch:
-            p.relevance_score = 0.5
+        logger.error(f"[AGENT1-B] 批次打分失败，未被打分的论文赋予中性分 0.5: {e}")
+        for i, p in enumerate(batch):
+            if i not in scored_indices:
+                p.relevance_score = 0.5
 
 
-def _retry_borderline(p: PaperMeta, topic: str, llm: LLMClient, threshold: float) -> float:
-    """对单篇边界论文重试打分最多 2 次，返回最高分。"""
-    best = p.relevance_score
-    for _ in range(2):
-        _score_batch([p], topic, llm, 0)
-        if p.relevance_score > best:
-            best = p.relevance_score
-            if best >= threshold:
-                break
-    return best
+def _retry_borderline_batch(
+    borderline: list[PaperMeta], topic: str, llm: LLMClient, threshold: float
+) -> None:
+    """对一批边界论文批量重试打分最多 2 次，每篇保留最高分。"""
+    best_scores = {id(p): p.relevance_score for p in borderline}
+    for attempt in range(2):
+        _score_batch(borderline, topic, llm, 0)
+        for p in borderline:
+            if p.relevance_score > best_scores[id(p)]:
+                best_scores[id(p)] = p.relevance_score
+        if all(s >= threshold for s in best_scores.values()):
+            break
+    for p in borderline:
+        p.relevance_score = best_scores[id(p)]
 
 
 def _format_paper_for_scoring(idx: int, p: PaperMeta) -> str:
     """格式化学论文评分条目，附带质量元数据。"""
     abstract = (p.abstract or "")[:3000]
-    lines = [f"[{idx}] 标题：{p.title}", f"摘要：{abstract}"]
+    if not p.abstract or not p.abstract.strip():
+        lines = [
+            f"[{idx}] 标题：{p.title}",
+            "摘要：[无摘要可用 — 请仅基于标题与发表场合保守打分；"
+            "除非标题明显高度相关或明显不相关，否则建议给 0.4-0.6]",
+        ]
+    else:
+        lines = [f"[{idx}] 标题：{p.title}", f"摘要：{abstract}"]
     if p.venue:
         lines.append(f"发表场合：{p.venue}")
     if p.citation_count > 0:

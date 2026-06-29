@@ -1,0 +1,18 @@
+{% if facts %}
+## 📚 圆桌可引论文事实层（{{ facts|length }} 篇，按相关度降序）
+
+{% for f in facts %}
+### 论文 P{{ loop.index }}: 《{{ f.title or "(untitled)" }}》{% if f.arxiv_id %} (arxiv:{{ f.arxiv_id }}){% endif %}
+
+- **问题**：{{ f.extraction.problem or "—" }}
+- **方法**：{{ (f.extraction.methods or []) | join("、") or "—" }}
+- **数据集**：{{ (f.extraction.datasets or []) | join("、") or "—" }}
+- **关键指标**：{% if (f.extraction.metrics or []) %}{% for m in (f.extraction.metrics or []) %}{% if m is mapping %}{{ m.name or "?" }}={{ m.value or "?" }}{% if m.condition %} @ {{ m.condition }}{% endif %}{% if not loop.last %}; {% endif %}{% endif %}{% endfor %}{% else %}—{% endif %}
+- **Baselines**：{{ (f.extraction.baselines or []) | join("、") or "—" }}
+- **作者承认局限**：{{ (f.extraction.limitations or []) | join("；") or "—" }}
+- **贡献**：{{ (f.extraction.contributions or []) | join("；") or "—" }}
+
+{% endfor %}
+
+> ⚠️ 评审引用论文时请用 "论文 P1 / P2 ..." 编号，或写论文标题前 10 字。**禁止引用本表之外的论文事实**（你不知道它们）。
+{% endif %}

@@ -7,6 +7,7 @@ Ideator 模块入口。唯一对外接口：def register(core) -> ModuleInfo。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -61,6 +62,8 @@ def register(core: Core) -> ModuleInfo:
     from .graduation import GraduationManager
     from .tool_registry import create_default_registry
     from .arbiter import Arbiter
+    from .secretary import SecretaryService
+    from .stream_hub import get_stream_hub
 
     ideator_llm = IdeatorLLM(core_llm=core.llm)
     team_memory = TeamMemory(core.db.conn)
@@ -68,10 +71,17 @@ def register(core: Core) -> ModuleInfo:
     tool_registry = create_default_registry()
     arbiter = Arbiter(llm=ideator_llm, graduation=graduation_mgr,
                       tool_registry=tool_registry, team_memory=team_memory)
+
+    secretary = SecretaryService(
+        llm=ideator_llm,
+        data_access=data,
+        stream_hub=get_stream_hub(),
+    )
     _roundtable_manager = AgentTeamManager(
         llm=ideator_llm, data_access=data,
         tool_registry=tool_registry, team_memory=team_memory,
         graduation=graduation_mgr, arbiter=arbiter,
+        secretary=secretary,
     )
 
     # ── 路由 ──────────────────────────────────────────────────
@@ -129,12 +139,12 @@ def get_roundtable_manager():
 
 
 async def _daily_mine() -> None:
-    """每日全量挖掘任务。"""
+    """每日全量挖掘任务（balanced effort）。"""
     global _pipeline
     if _pipeline is None:
         return
     try:
-        ids = await _pipeline.run_full()
+        ids = await _pipeline.run_full(effort="balanced")
         logger.info(f"[Ideator] 每日挖掘完成：{len(ids)} 个火花")
     except Exception:
         logger.exception("[Ideator] 每日挖掘失败")
@@ -153,27 +163,37 @@ async def _spark_gc() -> None:
         logger.exception("[Ideator] GC 失败")
 
 
-async def _on_new_note(event: str, **data) -> None:
-    """当其他模块创建笔记时，触发增量挖掘。"""
-    global _pipeline
+# ── 事件防抖：30s 内多次事件合并为一次增量挖掘（BUG-095）──
+_debounce_timer: asyncio.Task | None = None
+_DEBOUNCE_SECONDS = 30
+
+
+async def _debounced_incremental() -> None:
+    """延迟 30s 后执行一次增量挖掘（lite 模式）。"""
+    global _pipeline, _debounce_timer
+    await asyncio.sleep(_DEBOUNCE_SECONDS)
+    _debounce_timer = None
     if _pipeline is None:
         return
     try:
         from datetime import datetime, timezone
-        since = data.get("timestamp", datetime.now(timezone.utc).isoformat())
-        await _pipeline.run_incremental(since)
+        since = datetime.now(timezone.utc).isoformat()
+        await _pipeline.run_incremental(since, effort="lite")
     except Exception:
         logger.warning("[Ideator] 增量挖掘失败", exc_info=True)
+
+
+async def _on_new_note(event: str, **data) -> None:
+    """当其他模块创建笔记时，触发防抖增量挖掘。"""
+    global _debounce_timer
+    if _debounce_timer:
+        _debounce_timer.cancel()
+    _debounce_timer = asyncio.create_task(_debounced_incremental())
 
 
 async def _on_new_summary(event: str, **data) -> None:
-    """当对话摘要生成后，触发增量挖掘。"""
-    global _pipeline
-    if _pipeline is None:
-        return
-    try:
-        from datetime import datetime, timezone
-        since = data.get("timestamp", datetime.now(timezone.utc).isoformat())
-        await _pipeline.run_incremental(since)
-    except Exception:
-        logger.warning("[Ideator] 增量挖掘失败", exc_info=True)
+    """当对话摘要生成后，触发防抖增量挖掘。"""
+    global _debounce_timer
+    if _debounce_timer:
+        _debounce_timer.cancel()
+    _debounce_timer = asyncio.create_task(_debounced_incremental())

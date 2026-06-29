@@ -62,7 +62,93 @@
         <div class="p-4 overflow-y-auto text-sm leading-relaxed">
             {% if summary_content %}
             <div class="prose prose-sm max-w-none" id="summary-content"></div>
-            <script>document.getElementById('summary-content').innerHTML = DOMPurify.sanitize({{ summary_html | tojson }});</script>
+            <script type="application/json" id="payload-data">{{ summary_html | tojson }}</script>
+            <script>document.getElementById('summary-content').innerHTML = DOMPurify.sanitize(JSON.parse(document.getElementById('payload-data').textContent));</script>
+
+            <!-- AI 味自检 -->
+            <div class="mt-3">
+                <button id="ai-critique-btn" type="button"
+                        class="text-xs bg-purple-100 text-purple-700 px-3 py-1 rounded hover:bg-purple-200">
+                    🤖 AI 味自检
+                </button>
+                <div id="ai-critique-panel" class="mt-2"></div>
+            </div>
+            <script>
+            (function () {
+                function getCookie(name) {
+                    var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+                    return m ? m.pop() : '';
+                }
+                function esc(s) {
+                    var d = document.createElement('div');
+                    d.textContent = (s == null ? '' : String(s));
+                    return d.innerHTML;
+                }
+                var paperId = {{ paper.id }};
+                var lastCritique = null;
+
+                async function postJSON(url, body) {
+                    var resp = await fetch(url, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': getCookie('pra_csrf')},
+                        body: body ? JSON.stringify(body) : '{}',
+                    });
+                    return resp.json();
+                }
+
+                function levelColor(level) {
+                    return level === '高' ? '#c00' : (level === '中' ? '#d98000' : '#2e7d32');
+                }
+
+                function renderCritique(panel, c) {
+                    if (!c || c.error || c.overall_score == null) {
+                        panel.innerHTML = '<p style="color:#c00">' + esc((c && c.error) || '诊断失败') + '</p>';
+                        return;
+                    }
+                    lastCritique = c;
+                    var dims = Object.entries(c.dimension_scores || {}).map(function (kv) {
+                        return '<li>' + esc(kv[0]) + '：' + esc(kv[1]) + '</li>';
+                    }).join('');
+                    var flagged = (c.flagged || []).map(function (f) {
+                        return '<li><b>[' + esc(f.dimension) + ']</b> “' + esc(f.excerpt) + '” — ' +
+                               esc(f.reason) + '　<em>建议：' + esc(f.fix) + '</em></li>';
+                    }).join('');
+                    var sugg = (c.suggestions || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
+                    panel.innerHTML =
+                        '<div class="border rounded p-3 text-sm bg-purple-50">' +
+                            '<p><b>AI 味总分：</b><span style="color:' + levelColor(c.level) + '">' +
+                                esc(c.overall_score) + '/100（' + esc(c.level) + '）</span></p>' +
+                            '<p class="mt-1"><b>维度：</b></p><ul class="ml-4 list-disc">' + dims + '</ul>' +
+                            '<p class="mt-1"><b>AI 味重的句子：</b></p><ul class="ml-4 list-disc">' + flagged + '</ul>' +
+                            '<p class="mt-1"><b>改写建议：</b></p><ul class="ml-4 list-disc">' + sugg + '</ul>' +
+                            '<button id="ai-rewrite-btn" type="button" class="mt-2 text-xs bg-green-100 text-green-700 px-3 py-1 rounded hover:bg-green-200">✍️ 一键去 AI 改写</button>' +
+                            '<div id="ai-rewrite-out" class="mt-2"></div>' +
+                        '</div>';
+                    document.getElementById('ai-rewrite-btn').addEventListener('click', doRewrite);
+                }
+
+                async function doCritique() {
+                    var panel = document.getElementById('ai-critique-panel');
+                    panel.innerHTML = '<p>⏳ 正在自检 AI 味…</p>';
+                    try { renderCritique(panel, await postJSON('/papers/' + paperId + '/ai-critique')); }
+                    catch (e) { panel.innerHTML = '<p style="color:#c00">出错：' + esc(e) + '</p>'; }
+                }
+
+                async function doRewrite() {
+                    var out = document.getElementById('ai-rewrite-out');
+                    out.innerHTML = '<p>⏳ 正在改写…</p>';
+                    try {
+                        var data = await postJSON('/papers/' + paperId + '/ai-rewrite', {critique: lastCritique});
+                        if (!data.rewritten) { out.innerHTML = '<p style="color:#c00">改写失败</p>'; return; }
+                        out.innerHTML = '<p class="mt-1"><b>去 AI 改写版：</b></p>' +
+                            '<div class="prose prose-sm max-w-none border rounded p-2 bg-white">' +
+                            DOMPurify.sanitize(marked.parse(data.rewritten)) + '</div>';
+                    } catch (e) { out.innerHTML = '<p style="color:#c00">出错：' + esc(e) + '</p>'; }
+                }
+
+                document.getElementById('ai-critique-btn').addEventListener('click', doCritique);
+            })();
+            </script>
             {% else %}
             <p class="text-gray-400 text-center py-10">尚未生成总结。可返回 session 页点击「重新分析」。</p>
             {% endif %}
@@ -84,6 +170,7 @@
         </h3>
     </div>
     <form method="post" action="/papers/{{ paper.id }}/note" class="p-4">
+        <input type="hidden" name="_csrf_token" value="">
         <textarea name="content" rows="6" placeholder="在这里写你对这篇论文的想法、灵感、待办..."
                   class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-yellow-300 focus:border-yellow-500 outline-none resize-y">{{ note_content }}</textarea>
         <div class="flex justify-between items-center mt-2">

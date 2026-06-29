@@ -36,11 +36,13 @@ class IdeatorPipeline:
     """ideator 挖掘管道。三种触发模式：全量、增量、定点。
 
     v2 升级：集成跨模型交叉审查、Tier 3 仲裁、迭代深化、溯源审计。
+    v3: 并发互斥锁 + effort 参数化。
     """
 
     def __init__(self, core: Core, data: DataAccess):
         self.core = core
         self.data = data
+        self._run_lock = asyncio.Lock()  # BUG-095: 防止 cron+事件+手动并发写
 
         # ── 跨模型审查组件（统一走 core.llm → deepseek-v4-pro）──
         from .ideator_llm import IdeatorLLM
@@ -70,9 +72,12 @@ class IdeatorPipeline:
     # 公开方法（保持现有签名）
     # ═══════════════════════════════════════════════════════════════
 
-    async def run_full(self, scope: str = "all") -> list[int]:
-        """每日全量挖掘。"""
-        return await self._run(trigger="daily_cron", scope=scope)
+    async def run_full(self, scope: str = "all", *, effort: str = "balanced") -> list[int]:
+        """每日全量挖掘。effort: lite|balanced|max|beast。"""
+        if getattr(self, '_shutting_down', False):
+            return []
+        async with self._run_lock:
+            return await self._run(trigger="daily_cron", scope=scope, effort=effort)
 
     async def run_full_with_diag(self, scope: str = "all") -> dict:
         """手动触发全量挖掘（带诊断信息）。返回 {spark_ids, count, diag: {...}}"""
@@ -110,15 +115,16 @@ class IdeatorPipeline:
         diag["effort"] = "beast"
         diag["stages"] = {}
         try:
-            return await self._run(trigger=trigger, scope=scope)
+            return await self._run(trigger=trigger, scope=scope, effort="beast")
         except Exception:
             logger.exception("[IdeatorPipeline] 诊断管道异常")
             return []
 
-    async def run_incremental(self, since: str) -> list[int]:
-        """事件驱动增量挖掘。"""
-        logger.info(f"[IdeatorPipeline] 增量挖掘 since={since}")
-        return await self._run(trigger="event")
+    async def run_incremental(self, since: str, *, effort: str = "lite") -> list[int]:
+        """事件驱动增量挖掘（默认轻量模式）。effort: lite|balanced|max|beast。"""
+        logger.info(f"[IdeatorPipeline] 增量挖掘 since={since} effort={effort}")
+        async with self._run_lock:
+            return await self._run(trigger="event", effort=effort)
 
     async def run_targeted(self, source_refs: list[dict]) -> list[int]:
         """用户手动定点挖掘。"""
@@ -213,6 +219,7 @@ class IdeatorPipeline:
         *,
         trigger: str = "event",
         scope: str = "all",
+        effort: str = "balanced",
         source_refs: list[dict] | None = None,
     ) -> list[int]:
         """S0→S1→S2→S3→S4→S5→S6 完整管道。
@@ -221,9 +228,11 @@ class IdeatorPipeline:
         """
         run_id = uuid.uuid4().hex
 
-        # ── Effort 固定最大 ──
-        effort = "beast"
-        params = EFFORT_PARAMS["beast"]
+        # ── Effort 参数化（BUG-093: 不再硬编码 beast）──
+        if effort not in EFFORT_PARAMS:
+            logger.warning(f"[IdeatorPipeline] unknown effort={effort}, fallback to balanced")
+            effort = "balanced"
+        params = EFFORT_PARAMS[effort]
         logger.info(
             f"[IdeatorPipeline] run_id={run_id} trigger={trigger} "
             f"effort={effort}"
@@ -563,7 +572,8 @@ class IdeatorPipeline:
             spark["source_type"] = group[0].get("recall_path", "cross_layer")
             return spark
 
-        async def _generate_group(group: list[dict]) -> dict | None:
+        async def _generate_group(group: list[dict]) -> list[dict]:
+            """每组生成 1-3 个研究火花（不同视角）。"""
             from paperreadagent.utils.json_utils import clean_json as _clean
             async with sem:
                 links_data = [
@@ -634,25 +644,32 @@ class IdeatorPipeline:
                     if resp["content"]:
                         try:
                             raw = _clean(resp["content"])
-                            spark = json.loads(raw)
-                            if spark is None:
-                                return None
-                            if isinstance(spark, dict) and spark.get("content"):
-                                return _build_source_refs(group, spark)
+                            sparks_data = json.loads(raw)
+                            if sparks_data is None:
+                                return []
+                            # Support single spark or array
+                            if isinstance(sparks_data, dict):
+                                sparks_data = [sparks_data]
+                            if not isinstance(sparks_data, list):
+                                logger.warning("[IdeatorPipeline] S2 火花格式异常（非数组/对象），丢弃")
+                                return []
+                            results = []
+                            for s in sparks_data:
+                                if isinstance(s, dict) and s.get("content"):
+                                    results.append(_build_source_refs(group, s))
+                            if results:
+                                return results
                         except json.JSONDecodeError:
                             logger.warning(
                                 "[IdeatorPipeline] S2 火花 JSON 解析失败，重试",
                             )
                             messages.append({
                                 "role": "user",
-                                "content": "JSON 解析失败，请返回纯 JSON：{\"content\": \"...\", \"quality_score\": 0.0-1.0} 或 null",
+                                "content": "JSON 解析失败，请返回纯 JSON 数组：[{\"content\": \"...\", \"quality_score\": 0.0-1.0}, ...] 或 []",
                             })
                             continue
-                        logger.warning(
-                            "[IdeatorPipeline] S2 火花 JSON 格式异常（缺少 content），丢弃: %s",
-                            str(spark)[:200],
-                        )
-                        return None
+                        logger.warning("[IdeatorPipeline] S2 火花 JSON 格式异常（缺少 content），丢弃")
+                        return []
 
                 # Fallback: 5 rounds with no output → pure prompt call
                 try:
@@ -661,16 +678,27 @@ class IdeatorPipeline:
                         module="ideator", purpose="spark_gen_fallback",
                     )
                     raw = _clean(raw)
-                    spark = json.loads(raw)
-                    if isinstance(spark, dict) and spark.get("content"):
-                        return _build_source_refs(group, spark)
+                    sparks_data = json.loads(raw)
+                    if isinstance(sparks_data, dict):
+                        sparks_data = [sparks_data]
+                    results = []
+                    for s in (sparks_data if isinstance(sparks_data, list) else []):
+                        if isinstance(s, dict) and s.get("content"):
+                            results.append(_build_source_refs(group, s))
+                    if results:
+                        return results
                 except Exception:
                     logger.warning("[IdeatorPipeline] S2 降级生成失败", exc_info=True)
 
-                return None
+                return []
 
         results = await asyncio.gather(*[_generate_group(g) for g in groups])
-        return [r for r in results if r is not None]
+        # Flatten: each group now returns a list of sparks
+        flat: list[dict] = []
+        for r in results:
+            if r:
+                flat.extend(r)
+        return flat
 
     # ═══════════════════════════════════════════════════════════════
     # S3 (new): 辩论审查（DebateEngine 8 坐席）
@@ -708,8 +736,10 @@ class IdeatorPipeline:
     async def _save_sparks(
         self, sparks: list[dict], run_id: str, params: dict,
     ) -> list[int]:
-        """去重后入库，根据审查结果决定最终评分，同步 core_notes。"""
+        """去重后入库，根据审查结果决定最终评分，同步 core_notes。
+        同一次 pipeline run 内的火花不互斥去重，只与历史火花比较。"""
         saved_ids = []
+        run_spark_ids: set[int] = set()  # 同 run 已保存的火花 ID，跳过互斥
 
         for i, spark in enumerate(sparks):
             # ── 审查结果判定 ───────────────────────────
@@ -802,10 +832,12 @@ class IdeatorPipeline:
                 run_id=run_id,
                 metadata=save_meta,
                 depth_content=spark.get("_draft", ""),
+                skip_dedup_ids=run_spark_ids,
             )
 
             if sid:
                 saved_ids.append(sid)
+                run_spark_ids.add(sid)
 
                 # Write review records with real spark_id
                 if debate is not None:

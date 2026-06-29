@@ -3,8 +3,8 @@ modules/thinker/tests/test_schema.py
 验证 Thinker 四张表的创建和结构。
 """
 
-from core import create_core
-from modules.thinker import register
+from paperreadagent.core import create_core
+from paperreadagent.modules.thinker import register
 
 
 def _create_registered_core():

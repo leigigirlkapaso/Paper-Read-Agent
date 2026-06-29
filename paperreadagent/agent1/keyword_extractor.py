@@ -29,7 +29,7 @@ _SYSTEM_PROMPT = """\
 用户会给你一段研究构想（可能中英混杂），你需要：
 
 ## 第一步：拆解研究角度
-将研究构想拆分为 3~4 个独立的研究角度（sub-angle）。每个角度应该覆盖一个不同的子方向或技术维度。
+将研究构想拆分为 4~5 个独立的研究角度（sub-angle）。每个角度应该覆盖一个不同的子方向或技术维度。
 例如："基于LLM的触觉渲染系统" 可拆为：
   - haptic rendering pipeline（触觉渲染管道）
   - LLM-driven semantic parsing（LLM语义解析）
@@ -58,11 +58,16 @@ _SYSTEM_PROMPT = """\
    示例：all:"haptic" AND all:"user study" AND all:"presence" AND all:walking
 
 重要原则：
-- 每个角度 4 条 query，3 个角度 = 12 条，4 个角度 = 16 条
+- 每个角度 4 条 query，4 个角度 = 16 条，5 个角度 = 20 条
 - 不同角度间的 query 不要重复相同的词组合
 - 优先使用 all: 字段（覆盖标题+摘要+全文）
 - 短语需加双引号，单词不加
 - 确保每条 query 简洁有力，不是长句
+- 【机器人/具身领域强制条款】当用户研究构想涉及机器人、具身、触觉、操作、抓取、manipulation、embodied、tactile 任何一项时，必须保证生成的全部 queries 中至少 30% 包含以下术语之一（含同义/相关变体）：
+  * 操作/控制类：manipulation, grasping, dexterous, contact-rich, compliance, teleoperation, kinesthetic, force feedback, impedance control
+  * 机器人系统：robot policy, robot learning, sim-to-real, foundation model for robotics, world model, embodied agent, robot foundation model
+  * 传感与硬件：haptic, tactile, vibrotactile, force/torque sensor, soft robotics, proprioception, plantar
+  这样确保检索能命中 RSS/CoRL/IJRR/IROS/ICRA 等机器人顶会顶刊的论文，而不仅仅是 NeurIPS/ICML 上的纯 AI 类论文。
 
 请严格以 JSON 格式输出，不要有任何额外文字：
 {
@@ -98,7 +103,8 @@ def extract_keywords(topic: str, llm: LLMClient) -> dict:
     logger.info("[AGENT1-A] 开始提取关键词（角度×维度矩阵）...")
     user_prompt = f"以下是用户的研究构想：\n\n{topic.strip()}"
 
-    raw, _usage = llm.chat(user_prompt=user_prompt, system_prompt=_SYSTEM_PROMPT)
+    raw, usage = llm.chat(user_prompt=user_prompt, system_prompt=_SYSTEM_PROMPT)
+    logger.info(f"[AGENT1-A] token usage: {usage}")
     result = _parse_json_response(raw)
 
     total_q = len(result["queries"])

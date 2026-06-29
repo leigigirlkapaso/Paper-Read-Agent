@@ -10,6 +10,7 @@ AGENT2：对单篇已下载的论文进行独立精读与结构化总结。
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from agent1.arxiv_searcher import PaperMeta
 from utils.llm_client import LLMClient
-from utils.pdf_parser import parse_pdf
+from utils.pdf_parser import parse_pdf, _ARXIV_ID_PATTERN, _try_pmc_xml
 
 if TYPE_CHECKING:
     from db.database import Database
@@ -84,36 +85,51 @@ async def read_paper(
             summary_path.unlink(missing_ok=True)
         else:
             if db and session_id:
-                _update_db_summary_status(db, session_id, paper.arxiv_id, "cached")
+                await _update_db_summary_status(db, session_id, paper.arxiv_id, "cached")
                 # 同步写回 DB summaries 表（修复缓存命中时 DB 无内容的问题）
-                paper_rows0 = db.conn.execute(
-                    "SELECT id FROM papers WHERE session_id = ? AND arxiv_id = ?",
-                    (session_id, paper.arxiv_id),
-                ).fetchone()
+                paper_rows0 = await asyncio.to_thread(
+                    lambda: db.conn.execute(
+                        "SELECT id FROM papers WHERE session_id = ? AND arxiv_id = ?",
+                        (session_id, paper.arxiv_id),
+                    ).fetchone()
+                )
                 if paper_rows0:
-                    db.save_summary(
-                        paper_id=paper_rows0["id"],
-                        prompt_hash=prompt_hash,
-                        model_name=llm.model_name,
-                        temperature=llm.temperature,
-                        max_chars=max_chars,
-                        content=cached_content,
-                        pdf_text_hash="cached",
+                    await asyncio.to_thread(
+                        lambda: db.save_summary(
+                            paper_id=paper_rows0["id"],
+                            prompt_hash=prompt_hash,
+                            model_name=llm.model_name,
+                            temperature=llm.temperature,
+                            max_chars=max_chars,
+                            content=cached_content,
+                            pdf_text_hash="cached",
+                        )
                     )
             return cached_content
 
     # ── PDF 解析 ──────────────────────────────────────────────
-    try:
-        import asyncio
-        pdf_text = await asyncio.wait_for(
-            asyncio.to_thread(parse_pdf, pdf_path, max_chars), timeout=120
-        )
-    except Exception as e:
-        logger.error(f"[AGENT2] PDF 解析失败 ({paper.arxiv_id}): {e}")
-        fallback = _make_fallback_summary(paper, error=str(e))
-        if db and session_id:
-            _update_db_summary_status(db, session_id, paper.arxiv_id, "failed")
-        return fallback
+    pmc_text = None
+    if paper.source_platform == "pmc" or (paper.arxiv_id or "").startswith(("pmcid_", "pmid_")):
+        pmcid = _extract_pmcid(paper)
+        if pmcid:
+            pmc_text = _try_pmc_xml(pmcid)
+            if pmc_text:
+                logger.info(f"[AGENT2] PMC XML fetched for {pmcid}")
+
+    if pmc_text:
+        pdf_text = pmc_text
+    else:
+        try:
+            arxiv_id = paper.arxiv_id if (paper.arxiv_id and _ARXIV_ID_PATTERN.search(paper.arxiv_id)) else ""
+            pdf_text = await asyncio.wait_for(
+                asyncio.to_thread(parse_pdf, pdf_path, max_chars, arxiv_id=arxiv_id), timeout=120
+            )
+        except Exception as e:
+            logger.error(f"[AGENT2] PDF 解析失败 ({paper.arxiv_id}): {e}")
+            fallback = _make_fallback_summary(paper, error=str(e))
+            if db and session_id:
+                await _update_db_summary_status(db, session_id, paper.arxiv_id, "failed")
+            return fallback
 
     # ── 构建 Prompt ───────────────────────────────────────────
     user_prompt = _build_user_prompt(paper, pdf_text, summary_prompt, topic)
@@ -121,16 +137,20 @@ async def read_paper(
 
     # ── 数据库缓存检查（精确匹配：prompt + PDF 内容） ─────────
     if db and session_id:
-        paper_rows = db.conn.execute(
-            "SELECT id FROM papers WHERE session_id = ? AND arxiv_id = ?",
-            (session_id, paper.arxiv_id),
-        ).fetchone()
+        paper_rows = await asyncio.to_thread(
+            lambda: db.conn.execute(
+                "SELECT id FROM papers WHERE session_id = ? AND arxiv_id = ?",
+                (session_id, paper.arxiv_id),
+            ).fetchone()
+        )
         if paper_rows:
             paper_db_id = paper_rows["id"]
-            cached = db.get_cached_summary(paper_db_id, prompt_hash, pdf_text_hash)
+            cached = await asyncio.to_thread(
+                db.get_cached_summary, paper_db_id, prompt_hash, pdf_text_hash
+            )
             if cached:
                 logger.info(f"[AGENT2] 数据库缓存命中: {paper.arxiv_id}")
-                _update_db_summary_status(db, session_id, paper.arxiv_id, "cached")
+                await _update_db_summary_status(db, session_id, paper.arxiv_id, "cached")
                 # 同步写回文件缓存
                 _save_summary(summary_path, cached)
                 return cached
@@ -158,7 +178,7 @@ async def read_paper(
         logger.error(f"[AGENT2] 彻底失败 ({paper.arxiv_id})，重试 {max_retries} 次: {last_error}")
         fallback = _make_fallback_summary(paper, error=str(last_error))
         if db and session_id:
-            _update_db_summary_status(db, session_id, paper.arxiv_id, "failed")
+            await _update_db_summary_status(db, session_id, paper.arxiv_id, "failed")
         return fallback
 
     # ── 包装为 Markdown 卡片 ──────────────────────────────────
@@ -167,25 +187,31 @@ async def read_paper(
 
     # ── 保存到数据库 ──────────────────────────────────────────
     if db and session_id:
-        paper_rows2 = db.conn.execute(
-            "SELECT id FROM papers WHERE session_id = ? AND arxiv_id = ?",
-            (session_id, paper.arxiv_id),
-        ).fetchone()
+        paper_rows2 = await asyncio.to_thread(
+            lambda: db.conn.execute(
+                "SELECT id FROM papers WHERE session_id = ? AND arxiv_id = ?",
+                (session_id, paper.arxiv_id),
+            ).fetchone()
+        )
         if paper_rows2:
-            db.save_summary(
-                paper_id=paper_rows2["id"],
-                prompt_hash=prompt_hash,
-                model_name=llm.model_name,
-                temperature=llm.temperature,
-                max_chars=max_chars,
-                content=md_card,
-                pdf_text_hash=pdf_text_hash,
-                token_count=token_usage.total_tokens if token_usage else None,
+            await asyncio.to_thread(
+                lambda: db.save_summary(
+                    paper_id=paper_rows2["id"],
+                    prompt_hash=prompt_hash,
+                    model_name=llm.model_name,
+                    temperature=llm.temperature,
+                    max_chars=max_chars,
+                    content=md_card,
+                    pdf_text_hash=pdf_text_hash,
+                    token_count=token_usage.total_tokens if token_usage else None,
+                )
             )
-            db.update_paper(
-                paper_rows2["id"],
-                summary_status="success",
-                summary_path=str(summary_path),
+            await asyncio.to_thread(
+                lambda: db.update_paper(
+                    paper_rows2["id"],
+                    summary_status="success",
+                    summary_path=str(summary_path),
+                )
             )
 
     logger.info(f"[AGENT2] 总结完成: {paper.title[:60]}...")
@@ -193,6 +219,62 @@ async def read_paper(
 
 
 # ── 内部工具函数 ───────────────────────────────────────────────
+
+# Version tag for the fact-card / self-check block. Bumping this (or editing
+# the block below) changes _compute_prompt_hash, invalidating cached summaries
+# so papers are re-read with the new output requirements.
+_PROMPT_VERSION = "v2-factcard"
+
+_FACTCARD_SELFCHECK_BLOCK = """
+
+─────────────────────────────────────
+【附加输出要求 — 以下两节必须在上述分析之后输出】
+
+## 关键数据卡
+从论文中提取可直接复用的精确事实，供后续研究 idea 生成与综述写作使用。
+硬约束（仅适用于本节，不影响上面的分析散文）：
+- 每条必须含：具体数值 + 单位 + 测试条件/数据集
+- 严禁模糊词："较高""较大""有所提升""显著优于"等一律不写
+- 没有具体数据支撑的结论不要写进本节
+- 列表化，每条 ≤ 一行
+示例：
+- RLBench 10 任务平均成功率 78.3%（基线 Diffusion Policy 52.1%）
+- 推理延迟 23ms/帧（NVIDIA A100，batch=1）
+
+## 未提取自检
+列出你在论文里看到、但本次分析没有深入提取的内容（自检漏读）：
+- 格式：[Fig./Table/章节] — 展示了什么 + 为何未提取
+示例：
+- Fig.7 — 展示了 attention 可视化，但未提取具体 attention 分布数据
+- 附录 C — 含完整超参表，本次未逐项记录
+若确无遗漏，写"无明显遗漏"。
+
+---
+
+## 结构化抽取（机器读取，必填）
+
+请在文末另起一节，输出严格 JSON，包在 <JSON>...</JSON> 标签之间：
+
+<JSON>
+{
+  "problem": "<1-2 句研究问题>",
+  "methods": ["<方法/技术名>", "..."],
+  "datasets": ["<数据集名>", "..."],
+  "metrics": [{"name":"<指标名>", "value":"<数值+单位>", "condition":"<在什么数据集/任务/条件下>"}],
+  "baselines": ["<对照方法名>", "..."],
+  "limitations": ["<作者明说的局限>", "..."],
+  "contributions": ["<主要贡献>", "..."]
+}
+</JSON>
+
+# 硬性约束
+- 标签 <JSON>...</JSON> 完整闭合，内部是 raw JSON（无 ```json 围栏，无注释）
+- 列表项软上限：methods/datasets/baselines ≤5，limitations/contributions ≤4，metrics ≤6
+- 抽不到就给空数组 []（不要编造、不要写"暂无"占位）
+- metrics 必须三元组齐全；只有数字没有 condition 等于无效——宁缺勿凑
+- 字符串用论文原文术语，不要中文翻译/改写（除非论文本就是中文）
+─────────────────────────────────────"""
+
 
 def _build_user_prompt(
     paper: PaperMeta,
@@ -224,6 +306,7 @@ def _build_user_prompt(
         + "\n".join(meta_lines)
         + f"\n\n## 论文全文（Markdown 格式）\n{pdf_text}\n\n"
         f"## 分析要求\n{summary_prompt.strip()}"
+        + _FACTCARD_SELFCHECK_BLOCK
     )
 
 
@@ -265,7 +348,9 @@ def _save_summary(path: Path, content: str) -> None:
 
 
 def _compute_prompt_hash(summary_prompt: str, model: str, temperature: float, max_chars: int, topic: str = "") -> str:
-    components = f"{summary_prompt}|{model}|{temperature}|{max_chars}|{topic}"
+    # _FACTCARD_SELFCHECK_BLOCK is folded in directly, so ANY edit to the block
+    # auto-invalidates cached summaries (no need to remember bumping _PROMPT_VERSION).
+    components = f"{summary_prompt}|{model}|{temperature}|{max_chars}|{topic}|{_PROMPT_VERSION}|{_FACTCARD_SELFCHECK_BLOCK}"
     return hashlib.sha256(components.encode()).hexdigest()
 
 
@@ -273,11 +358,28 @@ def _compute_pdf_hash(pdf_text: str) -> str:
     return hashlib.sha256(pdf_text.encode()).hexdigest()
 
 
-def _update_db_summary_status(
+def _extract_pmcid(paper: PaperMeta) -> str | None:
+    """从 PaperMeta 中提取 PMCID。
+
+    支持格式：
+    - arxiv_id = "pmcid_PMC123456" → "PMC123456"
+    - doi = "PMC123456" → "PMC123456"
+    """
+    if paper.arxiv_id:
+        if paper.arxiv_id.startswith("pmcid_"):
+            return paper.arxiv_id[6:]  # strip "pmcid_" prefix
+    if paper.doi:
+        if paper.doi.startswith("PMC"):
+            return paper.doi
+    return None
+
+
+async def _update_db_summary_status(
     db: "Database", session_id: int, arxiv_id: str, status: str
 ) -> None:
-    db.conn.execute(
+    await asyncio.to_thread(
+        db.conn.execute,
         "UPDATE papers SET summary_status = ? WHERE session_id = ? AND arxiv_id = ?",
         (status, session_id, arxiv_id),
     )
-    db.conn.commit()
+    await asyncio.to_thread(db.conn.commit)

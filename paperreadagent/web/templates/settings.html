@@ -9,6 +9,7 @@
     <div class="bg-white rounded-xl shadow-sm border p-5">
         <h2 class="font-semibold text-sm mb-3">修改密码</h2>
         <form method="post" action="/settings/change-password" class="space-y-3">
+            <input type="hidden" name="_csrf_token" value="">
             <input type="password" name="old_password" placeholder="当前密码"
                    class="w-full border rounded-lg px-3 py-2 text-sm">
             <input type="password" name="new_password" placeholder="新密码（至少6位）"

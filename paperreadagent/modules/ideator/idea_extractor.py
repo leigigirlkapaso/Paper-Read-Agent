@@ -15,7 +15,6 @@ from paperreadagent.core.embedding import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
-_FLASH_MODEL = "deepseek-v4-flash"
 _MAX_IDEA_CHARS = 5000       # max chars per idea text for embedding
 _CHUNK_SIZE = 3000           # semantic chunk window
 _CHUNK_OVERLAP = 500         # overlap between adjacent chunks
@@ -31,7 +30,7 @@ class IdeaExtractor:
     """
 
     def __init__(self, *, llm, core_llm, data):
-        self._llm = llm          # IdeatorLLM (flash model via model= override)
+        self._llm = llm          # IdeatorLLM
         self._core_llm = core_llm  # CoreLLM (for embedding)
         self._data = data          # DataAccess
 
@@ -176,7 +175,6 @@ class IdeaExtractor:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=2048,
-            model=_FLASH_MODEL,
         )
         from paperreadagent.utils.json_utils import clean_json
         raw = clean_json(raw)

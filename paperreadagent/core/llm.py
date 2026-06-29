@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
@@ -251,10 +252,14 @@ class CoreLLM:
         purpose: str = "chat",
         temperature: float | None = None,
         max_tokens: int = 8192,
+        stream_timeout: float = 300.0,
     ) -> AsyncGenerator[str, None]:
         """
         异步流式对话，yield 每个 delta chunk。
         messages 格式：[{"role": "system"|"user"|"assistant", "content": "..."}]
+
+        stream_timeout: 整个流式响应的总超时秒数（默认 300s），
+                       防止 API 挂起导致调用者永久阻塞。
         """
         resp = await self._async_client.chat.completions.create(
             model=self.model_name,
@@ -265,21 +270,43 @@ class CoreLLM:
             max_tokens=max_tokens,
         )
         full = []
-        async for chunk in resp:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta and delta.content:
-                full.append(delta.content)
-                yield delta.content
 
-        # 估算 token（精确计数需 tiktoken，这里用字符估算）
+        async def _iter():
+            async for chunk in resp:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta and delta.content:
+                    full.append(delta.content)
+                    yield delta.content
+
+        # Track total elapsed time so stream_timeout is a whole-stream limit,
+        # not a per-chunk reset (per-chunk reset could allow unbounded total time).
+        it = _iter()
+        start_time = time.monotonic()
+        try:
+            while True:
+                try:
+                    elapsed = time.monotonic() - start_time
+                    remaining = max(1, stream_timeout - elapsed)
+                    chunk = await asyncio.wait_for(it.__anext__(), timeout=remaining)
+                    yield chunk
+                except StopAsyncIteration:
+                    break
+        except asyncio.TimeoutError:
+            logger.error(f"[CoreLLM] chat_stream 超时（{stream_timeout}s），已收到 {len(full)} 个 chunk")
+        except Exception:
+            logger.exception("[CoreLLM] chat_stream 异常")
+
+        # 估算 token（精确计数需 tiktoken；这里用字符×0.4 估算。
+        # 注意：对 CJK 语言偏保守——中文字符通常 ~1.5 token/字，英文 ~0.3 token/字，
+        # 所以 0.4 是混合文本的折中估算，但仍是粗略近似。）
         prompt_chars = sum(len(m.get("content", "")) for m in messages)
         completion_chars = len("".join(full))
         usage = {
-            "prompt_tokens": max(1, prompt_chars // 2),
-            "completion_tokens": max(1, completion_chars // 2),
-            "total_tokens": max(1, (prompt_chars + completion_chars) // 2),
+            "prompt_tokens": max(1, int(prompt_chars * 0.4)),
+            "completion_tokens": max(1, int(completion_chars * 0.4)),
+            "total_tokens": max(1, int((prompt_chars + completion_chars) * 0.4)),
         }
         self._track_usage(module, purpose, usage)
 
@@ -291,6 +318,29 @@ class CoreLLM:
         if self.embedding_provider == "local":
             return await self._embed_local(text)
         return await self._embed_remote(text, module)
+
+    @evolving
+    async def embed_batch(
+        self,
+        texts: list[str],
+        *,
+        module: str = "core",
+        concurrency: int = 16,
+    ) -> list[list[float]]:
+        """并发批量 embedding。每条独立 try/except — 失败位置返回 []，整体不抛。"""
+        if not texts:
+            return []
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _one(t: str) -> list[float]:
+            async with sem:
+                try:
+                    return await self.embed(t, module=module)
+                except Exception:
+                    logger.warning("[CoreLLM] embed_batch slot failed", exc_info=True)
+                    return []
+
+        return await asyncio.gather(*[_one(t) for t in texts])
 
     async def _embed_local(self, text: str) -> list[float]:
         """本地 BGE 模型 embedding（sentence-transformers）。失败时下次重试。"""
@@ -315,11 +365,11 @@ class CoreLLM:
 
         try:
             return await asyncio.wait_for(
-                loop.run_in_executor(None, _run), timeout=20,
+                loop.run_in_executor(None, _run), timeout=120,
             )
         except Exception:
             self._local_embedder = None
-            logger.warning("[CoreLLM] 本地 embedding 模型暂时不可用，下次调用重试", exc_info=True)
+            logger.warning("[CoreLLM] 本地 embedding 模型加载超时/失败（120s），下次调用重试", exc_info=True)
             return []
 
     async def _embed_remote(self, text: str, module: str) -> list[float]:

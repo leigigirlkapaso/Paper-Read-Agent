@@ -59,7 +59,7 @@ class Core:
         *,
         db: CoreDatabase,
         llm: CoreLLM,
-        voice: CoreVoice,
+        voice: CoreVoice | None,
         knowledge: KnowledgeLayer,
         scheduler: CoreScheduler,
         event_bus: EventBus,
@@ -76,7 +76,7 @@ class Core:
         self.config = config
         self._modules: dict[str, ModuleInfo] = {}
         self._fastapi_app = None
-        self.legacy_db: Any = None  # 由 create_app 或测试注入
+        self.legacy_db: Any = None  # 由 web/app.py 注入，ideator DataAccess 桥接使用
 
     # ── 模块生命周期 ──────────────────────────────────────────
 
@@ -209,6 +209,12 @@ def create_core(
         frontend=frontend,
         config=merged_config,
     )
+
+    # 启动调度器（幂等；若当前无事件循环则延迟到调用方在 async 上下文中手动 start）
+    try:
+        scheduler.start()
+    except RuntimeError:
+        logger.info("[Core] Scheduler deferred — no event loop yet, will start on app startup")
 
     logger.info("[Core] 核心层初始化完成")
     return core

@@ -36,7 +36,7 @@ async def test_full_module_registration(thinker_core):
 @pytest.mark.asyncio
 async def test_chat_to_close_lifecycle(thinker_core):
     """对话生命周期：创建 → 发消息 → 流式回复 → 关闭。"""
-    from modules.thinker.chat import ChatEngine
+    from paperreadagent.modules.thinker.chat import ChatEngine
 
     engine = ChatEngine(thinker_core)
 
@@ -79,8 +79,8 @@ async def test_chat_to_close_lifecycle(thinker_core):
 @pytest.mark.asyncio
 async def test_mode_switching(thinker_core):
     """验证模式切换。"""
-    from modules.thinker.chat import ChatEngine
-    from modules.thinker.deep_inquiry import DeepInquiryEngine
+    from paperreadagent.modules.thinker.chat import ChatEngine
+    from paperreadagent.modules.thinker.deep_inquiry import DeepInquiryEngine
 
     engine = ChatEngine(thinker_core)
     inquiry = DeepInquiryEngine(thinker_core)
@@ -104,8 +104,8 @@ async def test_mode_switching(thinker_core):
 @pytest.mark.asyncio
 async def test_resolution_tracking(thinker_core):
     """验证承诺追踪流程。"""
-    from modules.thinker.chat import ChatEngine
-    from modules.thinker.resolutions import ResolutionTracker
+    from paperreadagent.modules.thinker.chat import ChatEngine
+    from paperreadagent.modules.thinker.resolutions import ResolutionTracker
 
     engine = ChatEngine(thinker_core)
     tracker = ResolutionTracker(thinker_core)
@@ -141,8 +141,8 @@ async def test_resolution_tracking(thinker_core):
 @pytest.mark.asyncio
 async def test_pending_questions(thinker_core):
     """验证主动提问生成和投递。"""
-    from modules.thinker.chat import ChatEngine
-    from modules.thinker.questions import QuestionGenerator
+    from paperreadagent.modules.thinker.chat import ChatEngine
+    from paperreadagent.modules.thinker.questions import QuestionGenerator
 
     engine = ChatEngine(thinker_core)
     gen = QuestionGenerator(thinker_core)
@@ -178,9 +178,9 @@ async def test_pending_questions(thinker_core):
 @pytest.mark.asyncio
 async def test_knowledge_linker(thinker_core):
     """验证知识关联（不实际调用 embedding API）。"""
-    from modules.thinker.knowledge_linker import KnowledgeLinker
-    from modules.thinker.chat import ChatEngine
-    from core.embedding import pack_embedding, unpack_embedding
+    from paperreadagent.modules.thinker.knowledge_linker import KnowledgeLinker
+    from paperreadagent.modules.thinker.chat import ChatEngine
+    from paperreadagent.core.embedding import pack_embedding, unpack_embedding
 
     engine = ChatEngine(thinker_core)
     conv_id = await engine.create_conversation()

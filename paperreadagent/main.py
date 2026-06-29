@@ -20,29 +20,36 @@ import hashlib
 import io
 import json
 import logging
+import os
 import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import aiohttp
 import yaml
 
-if sys.platform == "win32":
+if sys.platform == "win32" and "pytest" not in sys.modules:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 from agent1.keyword_extractor import extract_keywords
 from agent1.arxiv_searcher import search_papers, PaperMeta
 from agent1.paper_filter import filter_papers
-from agent1.semantic_scholar_searcher import search_semantic_scholar
-from agent1.pwc_searcher import search_pwc
+from agent1.hybrid_prefilter import hybrid_prefilter
+from agent1.citation_expander import expand_by_citations
 from agent1.openalex_searcher import search_openalex
 from agent1.dblp_searcher import search_dblp
+from agent1.pmc_searcher import search_pmc
+from agent1.openreview_searcher import search_openreview
+from agent1.crossref_searcher import search_crossref
 from agent2.parallel_runner import run_parallel
+from agent2.synthesis import generate_synthesis
 from utils.llm_client import LLMClient
-from utils.arxiv_downloader import download_papers_batch  # 保留向后兼容
 from utils.multi_downloader import download_papers_batch_multi
+from utils.paper_dedup import dedup_papers, extract_identifiers
 from utils.local_scanner import scan_and_merge_local_papers, scan_only_local_papers
+from utils.abstract_resolver import resolve_abstract
 from db.database import Database
 
 # ── 日志配置 ──────────────────────────────────────────────────
@@ -104,6 +111,7 @@ def build_final_report(
     queries: list[str],
     papers_with_summaries: list[tuple[PaperMeta, str]],
     failed_papers: list[PaperMeta] | None = None,
+    overview: str = "",
 ) -> str:
     """拼装最终 Markdown 报告。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -161,12 +169,15 @@ def build_final_report(
         lines.append(summary_body)
         lines += ["", "---", ""]
 
-    lines += [
-        "## 综合总结",
-        "",
-        "> 以上为各文献的独立分析。请综合以上信息进行整体归纳。",
-        "",
-    ]
+    if overview and overview.strip():
+        lines += ["## 综合总结", "", overview.strip(), ""]
+    else:
+        lines += [
+            "## 综合总结",
+            "",
+            "> 以上为各文献的独立分析。请综合以上信息进行整体归纳。",
+            "",
+        ]
 
     if failed_papers:
         lines += [
@@ -215,17 +226,60 @@ def _strip_card_header(summary: str) -> str:
 
 
 def _dedup_candidates(papers: list[PaperMeta]) -> list[PaperMeta]:
-    seen: set[str] = set()
-    deduped: list[PaperMeta] = []
-    for p in papers:
-        if not p.arxiv_id:
-            continue
-        key = p.arxiv_id.lower().split("v")[0]
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(p)
-    return deduped
+    """Cross-platform, multi-identifier paper dedup with field merging.
+
+    Thin wrapper around utils.paper_dedup.dedup_papers — kept for
+    backward compatibility with any callers that import this name.
+    """
+    return dedup_papers(papers)
+
+
+def _resolve_missing_abstracts(
+    papers: list[PaperMeta], core_api_key: str,
+) -> list[PaperMeta]:
+    """Fill in missing abstracts via 3-tier resolver cascade.
+
+    Only papers with an empty abstract AND a non-empty DOI are sent through
+    the resolver (no DOI -> no way to look up).
+    """
+    targets = [(i, p) for i, p in enumerate(papers)
+               if (not p.abstract or not p.abstract.strip()) and p.doi]
+    if not targets:
+        return papers
+
+    logger.info("[Pipeline] resolving %d missing abstracts via cascade...",
+                len(targets))
+
+    async def _run() -> dict[int, str]:
+        results: dict[int, str] = {}
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=4)
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(
+            connector=connector, timeout=timeout,
+        ) as session:
+            sem = asyncio.Semaphore(10)
+
+            async def _one(idx, paper):
+                async with sem:
+                    abs_text = await resolve_abstract(
+                        paper.doi, session=session,
+                        core_api_key=core_api_key,
+                    )
+                    if abs_text:
+                        results[idx] = abs_text
+
+            await asyncio.gather(*[_one(i, p) for i, p in targets],
+                                  return_exceptions=True)
+        return results
+
+    resolved = asyncio.run(_run())
+    n_filled = 0
+    for idx, abs_text in resolved.items():
+        papers[idx].abstract = abs_text
+        n_filled += 1
+    logger.info("[Pipeline] abstract resolver filled %d/%d missing abstracts",
+                n_filled, len(targets))
+    return papers
 
 
 # ==============================================================================
@@ -264,6 +318,9 @@ def _create_session_dir(project_name: str, db: Database, project_id: int) -> Pat
     safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in project_name).strip()
     if not safe_name:
         safe_name = "project"
+    resolved = (PROJECTS_DIR / safe_name).resolve()
+    if not str(resolved).startswith(str(PROJECTS_DIR.resolve())):
+        raise ValueError("Invalid project name")
     # 序号 = 当前项目 session 数（新建 session 已入库，计数即序号）
     seq = len(db.list_sessions(project_id))
     dir_name = f"{seq:03d}_{ts}"
@@ -381,6 +438,15 @@ def run_online_search(
     pdf_dir = session_dir / "papers"
     cb = progress_callback or (lambda s, m: None)
 
+    # Export contact_email as env var so lazy-UA construction in dblp_searcher and
+    # arxiv_downloader can pick it up. Empty string falls back to anonymous UA.
+    _contact_email = cfg.get("contact_email", "") or ""
+    if _contact_email:
+        os.environ["PAPERREAD_CONTACT_EMAIL"] = _contact_email
+        logger.info("contact_email set: %s", _contact_email)
+    else:
+        logger.info("contact_email not set; UA will be anonymous (DBLP risk ↑)")
+
     print("\n" + "═" * 60)
     print("  [流程] 关键词提取 (AGENT1-A)")
     print("═" * 60)
@@ -414,65 +480,86 @@ def run_online_search(
     min_year = research_cfg.get("min_year", 0)
     sort_by = research_cfg.get("sort_by", "date")
 
-    # 构建并行搜索任务（四平台独立，可完全并发）
-    search_tasks: list[tuple[str, callable]] = []
+    arxiv_page_delay = research_cfg.get("arxiv_page_delay", 2.0)
 
-    arxiv_enabled = sources_cfg.get("arxiv", True)
-    s2_enabled = sources_cfg.get("semantic_scholar", False)
-    pwc_enabled = sources_cfg.get("papers_with_code", False)
-    oa_enabled = sources_cfg.get("openalex", False)
-
-    if arxiv_enabled:
-        def _run_arxiv():
-            return search_papers(
-                queries=queries, max_results=research_cfg.get("max_search_results", 100),
-                keywords=keywords, min_results=research_cfg.get("min_search_results", 200),
+    # ── 平台注册表：一条记录定义一个搜索源 ──
+    _PLATFORMS = [
+        {
+            "key": "arxiv",
+            "enabled": sources_cfg.get("arxiv", True),
+            "func": lambda: search_papers(
+                queries=queries,
+                max_results=research_cfg.get("max_search_results", 100),
+                keywords=keywords,
+                min_results=research_cfg.get("min_search_results", 200),
                 max_queries=research_cfg.get("max_queries", 8),
                 query_delay=research_cfg.get("query_delay", 3.0),
-                sort_by=sort_by, min_year=min_year,
-            )
-        search_tasks.append(("arxiv", _run_arxiv))
-
-    if s2_enabled:
-        def _run_s2():
-            return search_semantic_scholar(
-                queries=queries, max_results_per_query=sources_cfg.get("s2_max_per_query", 100),
-                min_year=min_year, api_key=sources_cfg.get("s2_api_key", ""),
-                query_delay=sources_cfg.get("s2_query_delay", 3.0),
+                sort_by=sort_by,
+                min_year=min_year,
+                page_delay=arxiv_page_delay,
+            ),
+        },
+        {
+            "key": "oa",
+            "enabled": sources_cfg.get("openalex", True),
+            "func": lambda: search_openalex(
+                queries=queries,
+                max_results_per_query=sources_cfg.get("oa_max_per_query", 100),
+                min_year=min_year,
+                query_delay=sources_cfg.get("oa_query_delay", 2.0),
                 max_queries=research_cfg.get("max_queries", 8),
-            )
-        search_tasks.append(("s2", _run_s2))
-
-    if pwc_enabled:
-        def _run_pwc():
-            return search_pwc(
-                queries=queries, max_results_per_query=sources_cfg.get("pwc_max_per_query", 100),
-                min_year=min_year, query_delay=sources_cfg.get("pwc_query_delay", 2.0),
+            ),
+        },
+        {
+            "key": "dblp",
+            "enabled": sources_cfg.get("dblp", True),
+            "func": lambda: search_dblp(
+                queries=queries,
+                max_results_per_query=sources_cfg.get("dblp_max_per_query", 100),
+                min_year=min_year,
+                query_delay=sources_cfg.get("dblp_query_delay", 2.0),
                 max_queries=research_cfg.get("max_queries", 8),
-            )
-        search_tasks.append(("pwc", _run_pwc))
-
-    if oa_enabled:
-        def _run_oa():
-            return search_openalex(
-                queries=queries, max_results_per_query=sources_cfg.get("oa_max_per_query", 100),
-                min_year=min_year, query_delay=sources_cfg.get("oa_query_delay", 2.0),
+            ),
+        },
+        {
+            "key": "pmc",
+            "enabled": sources_cfg.get("pmc", True),
+            "func": lambda: search_pmc(
+                queries=queries,
+                max_results_per_query=sources_cfg.get("pmc_max_per_query", 100),
+                min_year=min_year,
+                query_delay=sources_cfg.get("pmc_query_delay", 1.0),
                 max_queries=research_cfg.get("max_queries", 8),
-            )
-        search_tasks.append(("oa", _run_oa))
-
-    dblp_enabled = sources_cfg.get("dblp", False)
-    if dblp_enabled:
-        def _run_dblp():
-            return search_dblp(
-                queries=queries, max_results_per_query=sources_cfg.get("dblp_max_per_query", 100),
-                min_year=min_year, query_delay=sources_cfg.get("dblp_query_delay", 2.0),
+            ),
+        },
+        {
+            "key": "openreview",
+            "enabled": sources_cfg.get("openreview", False),
+            "func": lambda: search_openreview(
+                queries=queries,
+                max_results_per_query=sources_cfg.get("or_max_per_query", 50),
+                min_year=min_year,
+                query_delay=sources_cfg.get("or_query_delay", 1.0),
                 max_queries=research_cfg.get("max_queries", 8),
-            )
-        search_tasks.append(("dblp", _run_dblp))
+            ),
+        },
+        {
+            "key": "crossref",
+            "enabled": sources_cfg.get("crossref", False),
+            "func": lambda: search_crossref(
+                queries=queries,
+                max_results_per_query=sources_cfg.get("crossref_max_per_query", 100),
+                min_year=min_year,
+                query_delay=sources_cfg.get("crossref_query_delay", 0.5),
+                max_queries=research_cfg.get("max_queries", 8),
+            ),
+        },
+    ]
+
+    search_tasks = [(p["key"], p["func"]) for p in _PLATFORMS if p["enabled"]]
+    platform_map = {p["key"]: p["key"] for p in _PLATFORMS if p["enabled"]}
 
     all_candidates: list[PaperMeta] = []
-    platform_map = {"arxiv": "arxiv", "s2": "s2", "pwc": "pwc", "oa": "oa", "dblp": "dblp"}
 
     if len(search_tasks) > 1:
         # 多平台并行检索
@@ -508,12 +595,21 @@ def run_online_search(
             db.log(session_id, "INFO", f"{name} 检索完成: {len(results)} 篇")
 
     candidates = _dedup_candidates(all_candidates)
+    # Abstract resolver cascade: fill missing abstracts via OpenAlex/S2/CORE
+    # (CrossRef-only papers and edge-case OpenReview papers may arrive empty)
+    core_api_key = sources_cfg.get("core_api_key", "")
+    candidates = _resolve_missing_abstracts(candidates, core_api_key)
     cb("searching", f"检索完成，去重后 {len(candidates)} 篇候选")
 
     # 增量模式：排除已存在于本项目其他 session 的论文
+    # 使用多 ID 比对，因为合并后保留的 arxiv_id 可能与 existing_ids 里存的 DOI 形式不一致
     if existing_ids:
-        new_candidates = [p for p in candidates
-                          if p.arxiv_id.lower().split("v")[0] not in existing_ids]
+        new_candidates = []
+        for p in candidates:
+            ids = extract_identifiers(p)
+            if any(v in existing_ids for v in ids.values()):
+                continue
+            new_candidates.append(p)
         skipped = len(candidates) - len(new_candidates)
         if skipped > 0:
             print(f"  增量过滤：跳过 {skipped} 篇已存在论文，剩余 {len(new_candidates)} 篇新候选")
@@ -538,20 +634,49 @@ def run_online_search(
     cb("filtering", f"AI 筛选 {len(candidates)} 篇论文相关性...")
     db.log(session_id, "INFO", "开始相关性筛选")
 
+    # ── Hybrid 粗排：dense+BM25 → top-K，削减 LLM 精排成本（best-effort）──
+    prefiltered = hybrid_prefilter(
+        candidates, topic,
+        {**research_cfg, "_llm_cfg": cfg["llm"]},
+    )
+    if len(prefiltered) < len(candidates):
+        cb("filtering", f"粗排 {len(candidates)} → {len(prefiltered)} 篇送入 LLM 精排")
+
     filtered_papers = filter_papers(
-        papers=candidates, topic=topic, llm=llm,
+        papers=prefiltered, topic=topic, llm=llm,
         relevance_threshold=research_cfg.get("relevance_threshold", 0.8),
         max_download_papers=research_cfg.get("max_download_papers", 20),
         batch_size=research_cfg.get("search_batch_size", 10),
-        max_concurrent=research_cfg.get("filter_max_concurrent", 100),
+        max_concurrent=research_cfg.get("filter_max_concurrent", 200),
     )
     print(f"  筛选后保留：{len(filtered_papers)} 篇")
     cb("filtering", f"筛选完成，保留 {len(filtered_papers)} 篇（阈值 ≥{research_cfg.get('relevance_threshold', 0.8)}）")
     db.update_session(session_id, total_filtered=len(filtered_papers))
 
-    # 更新筛选状态
-    for p in candidates:
+    # 更新筛选状态：仅回写实际被 filter_papers 评分过的论文。
+    # 被 hybrid_prefilter 削去的论文 relevance_score 保持默认 0.0（insert_papers 时已写入），
+    # 不再覆盖，避免与 "LLM 评分 0.0" 混淆。bypass 路径下 prefiltered is candidates，行为不变。
+    for p in prefiltered:
         db.update_paper_by_arxiv_id(session_id, p.arxiv_id, relevance_score=p.relevance_score)
+
+    # ── 引文滚雪球：从高相关种子双向扩展召回（best-effort，失败即跳过）──
+    if research_cfg.get("enable_citation_snowball", True) and filtered_papers:
+        cb("filtering", "引文滚雪球扩展召回...")
+        snowball_papers = expand_by_citations(
+            seeds=filtered_papers, candidate_pool=candidates,
+            topic=topic, llm=llm,
+            cfg={**research_cfg, "_llm_cfg": cfg["llm"]},
+        )
+        if snowball_papers:
+            # 滚雪球新增的是 candidates 之外的新邻居，用同一 insert_papers 路径补登为
+            # session 行，以记录其下载/解析/摘要状态（论文本身已在内存 filtered_papers
+            # 中，无论是否入库都会被精读）。
+            db.insert_papers(session_id, [_paper_to_dict(p) for p in snowball_papers])
+            db.log(session_id, "INFO", f"引文滚雪球新增入库: {len(snowball_papers)} 篇")
+            filtered_papers = filtered_papers + snowball_papers
+            db.update_session(session_id, total_filtered=len(filtered_papers))
+            print(f"  引文滚雪球新增 {len(snowball_papers)} 篇 → 共 {len(filtered_papers)} 篇")
+            cb("filtering", f"滚雪球新增 {len(snowball_papers)} 篇")
 
     if not filtered_papers:
         logger.warning("筛选后无符合条件的文献。")
@@ -564,14 +689,16 @@ def run_online_search(
     cb("downloading", f"下载 {len(filtered_papers)} 篇 PDF...")
     db.log(session_id, "INFO", f"开始下载 {len(filtered_papers)} 篇 PDF")
 
-    print("  使用多源级联下载（arXiv → 直接URL → Unpaywall → S2 → Sci-Hub）...")
+    download_concurrent = downloader_cfg.get("max_concurrent", 4)
+    print(f"  使用多源级联下载（arXiv → 直接URL → Unpaywall → S2 → Sci-Hub，并发={download_concurrent}）...")
     download_results = download_papers_batch_multi(
         papers=filtered_papers,
         output_dir=pdf_dir,
-        unpaywall_email=downloader_cfg.get("unpaywall_email", ""),
+        unpaywall_email=(downloader_cfg.get("unpaywall_email", "") or _contact_email),
         enable_scihub=downloader_cfg.get("enable_scihub", False),
         scihub_mirrors=downloader_cfg.get("scihub_mirrors", None),
-        max_concurrent=5,
+        max_concurrent=download_concurrent,
+        contact_email=_contact_email,
     )
 
     downloadable = [p for p in filtered_papers if download_results.get(p.arxiv_id) is not None]
@@ -660,12 +787,15 @@ async def run_analysis(
     print("\n" + "═" * 60)
     print("  [流程] 生成最终报告")
     print("═" * 60)
+    # 生成跨论文综述（替换静态占位符；失败则降级为占位符）
+    overview = await generate_synthesis(cfg, papers_with_summaries, llm)
     report_md = build_final_report(
         cfg=cfg,
         keywords=keywords,
         queries=queries,
         papers_with_summaries=papers_with_summaries,
         failed_papers=failed_papers,
+        overview=overview,
     )
     report_path.write_text(report_md, encoding="utf-8")
     print(f"\n  [完成] 报告已生成：{report_path.resolve()}")
@@ -793,14 +923,26 @@ async def async_main() -> None:
                 queries = kw_result["queries"]
                 print(f"  无历史关键词，重新提取: {keywords}")
 
-            # 获取本项目中已有的 arxiv_id 集合
-            existing_ids = set()
+            # 获取本项目中已有论文的归一化标识符集合
+            # 注意：db.papers.arxiv_id 可能存储带前缀的形式（oa_/pmid_/pmcid_/dblp_）
+            # 或纯 DOI；新候选会被 extract_identifiers 剥离前缀。两侧必须用同一标识空间。
+            existing_ids: set[str] = set()
+            existing_paper_count = 0
             for s in db.list_sessions(project_id):
                 for p in db.get_session_papers(s["id"]):
-                    aid = (p.get("arxiv_id") or "").lower().split("v")[0]
-                    if aid:
-                        existing_ids.add(aid)
-            print(f"  已有论文: {len(existing_ids)} 篇")
+                    fake = PaperMeta(
+                        arxiv_id=(p.get("arxiv_id") or ""),
+                        title=(p.get("title") or ""),
+                        authors=[], published="", abstract="", pdf_url="", arxiv_url="",
+                        doi=(p.get("doi") or ""),
+                        relevance_score=0.0, source_platform="", venue="",
+                        code_url="", citation_count=0,
+                    )
+                    ids = extract_identifiers(fake)
+                    if ids:
+                        existing_paper_count += 1
+                        existing_ids.update(ids.values())
+            print(f"  已有论文: {existing_paper_count} 篇")
 
             online_downloaded, failed_papers, keywords, queries = run_online_search(
                 cfg, llm, topic, db, session_id, session_dir,

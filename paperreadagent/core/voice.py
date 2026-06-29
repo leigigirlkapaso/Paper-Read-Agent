@@ -23,7 +23,6 @@ _DEFAULT_TTS_VOICE = "achird"
 _DEFAULT_TTS_SPEED = 1.0
 _DEFAULT_STT_LANGUAGE = ""
 _DEFAULT_AUDIO_FORMAT = "webm"
-_DELIMITERS = frozenset("，。！？,.!?\n")
 
 
 class VoiceError(Exception):
@@ -65,9 +64,10 @@ class CoreVoice:
         return self._client
 
     @classmethod
-    def from_config(cls, voice_cfg: dict) -> "CoreVoice":
+    def from_config(cls, voice_cfg: dict) -> "CoreVoice | None":
         if not voice_cfg.get("api_key") or not voice_cfg.get("api_base_url"):
-            logger.warning("[CoreVoice] 语音配置缺少 api_key 或 api_base_url，服务可能不可用")
+            logger.warning("[CoreVoice] 语音配置缺少 api_key 或 api_base_url，返回 None（语音服务不可用）")
+            return None
         return cls(
             api_key=voice_cfg.get("api_key", ""),
             api_base_url=voice_cfg.get("api_base_url", ""),

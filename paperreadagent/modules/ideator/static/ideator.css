@@ -35,3 +35,104 @@
 /* 来源标签 */
 .spark-card .source-tag { transition: background 0.15s; }
 .spark-card .source-tag:hover { background: #e5e7eb; }
+
+/* 项目书面板（6 维渲染） */
+.brief-card h4 { margin: 0.6em 0 0.2em; font-weight: 600; color: #92400e; }
+.brief-card ul { margin: 0.2em 0 0.4em 1.1em; list-style: disc; }
+.brief-card li { margin: 0.15em 0; }
+.brief-card .risk-high { color: #c00; }
+.brief-card .risk-med  { color: #d98000; }
+.brief-card .risk-low  { color: #888; }
+.brief-card .evidence-conf { font-style: italic; color: #555; margin-top: 0.5em; }
+
+/* ── Streaming bubbles (SSE) ───────────────────────────── */
+.rt-message-streaming {
+    opacity: 0.95;
+    border-left: 3px solid #818cf8;
+}
+.rt-streaming-cursor {
+    animation: rt-stream-pulse 1s infinite;
+    color: #6366f1;
+    margin-left: 4px;
+}
+@keyframes rt-stream-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+.rt-stream-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.rt-message-stream-complete {
+    /* Completed streamed message: no left-border accent, no pulsing cursor.
+       Matches polled-message appearance until polling actually replaces it. */
+    opacity: 1;
+}
+
+/* ── Outline panel (Secretary) ─────────────────────────── */
+.rt-layout {
+    display: flex;
+    gap: 16px;
+    height: 100%;
+}
+.rt-main {
+    flex: 1;
+    min-width: 0;
+}
+.rt-outline-panel {
+    width: 320px;
+    flex-shrink: 0;
+    border-left: 1px solid #e5e7eb;
+    padding: 12px;
+    overflow-y: auto;
+    background: #fafafa;
+}
+.rt-outline-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 12px;
+}
+.rt-outline-title {
+    font-weight: 600;
+    color: #4b5563;
+}
+.rt-outline-round {
+    font-size: 12px;
+    color: #9ca3af;
+    background: #eef2ff;
+    padding: 2px 6px;
+    border-radius: 8px;
+}
+.rt-outline-body {
+    font-size: 13px;
+    line-height: 1.6;
+}
+.rt-outline-body h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #374151;
+    margin-top: 12px;
+    margin-bottom: 6px;
+}
+.rt-outline-body ul {
+    padding-left: 18px;
+    margin: 4px 0;
+}
+.rt-outline-empty {
+    text-align: center;
+    color: #9ca3af;
+    padding: 24px 12px;
+    font-size: 13px;
+}
+
+@media (max-width: 1024px) { .rt-outline-panel { width: 260px; } }
+@media (max-width: 768px) {
+    .rt-layout { flex-direction: column; }
+    .rt-outline-panel {
+        width: 100%; border-left: none;
+        border-top: 1px solid #e5e7eb;
+    }
+}

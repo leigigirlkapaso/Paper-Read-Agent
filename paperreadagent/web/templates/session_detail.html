@@ -16,14 +16,17 @@
             <form method="post" action="/papers/upload/{{ session.id }}"
                   enctype="multipart/form-data"
                   class="inline">
+                <input type="hidden" name="_csrf_token" value="">
+                <button type="submit" class="hidden"></button>
                 <label class="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 text-sm cursor-pointer">
                     📤 上传 PDF
                     <input type="file" name="files" multiple accept=".pdf" class="hidden"
-                           onchange="this.form.submit()">
+                           onchange="this.form.requestSubmit()">
                 </label>
             </form>
             <form method="post" action="/sessions/{{ session.id }}/delete"
                   onsubmit="return confirm('确定删除此会话？')">
+                <input type="hidden" name="_csrf_token" value="">
                 <button class="bg-red-100 text-red-600 px-4 py-2 rounded-lg hover:bg-red-200 text-sm">删除</button>
             </form>
         </div>
@@ -94,10 +97,9 @@
                 }
             } catch(e) {}
         };
-        evtSource.onerror = function() { evtSource.close(); };
+        // SSE: let browser auto-reconnect with exponential backoff on error
     })();
 </script>
-{% if request.state.is_mobile %}
 <script>
 (function() {
     var sessionId = {{ session.id }};
@@ -125,6 +127,7 @@
             .catch(function() {});
     }
 
+    // Fallback polling: starts after 3s if SSE hasn't connected
     var sseCheck = setTimeout(function() {
         pollTimer = setInterval(pollProgress, 5000);
     }, 3000);
@@ -138,7 +141,91 @@
 })();
 </script>
 {% endif %}
-{% endif %}
+
+<!-- 跨论文对比表（lazy-load on expand） -->
+<div x-data="{open: false, loaded: false, data: null, err: null}" class="mt-6 mb-6 border rounded">
+  <button
+    class="w-full text-left px-4 py-2 bg-gray-50 hover:bg-gray-100 font-medium"
+    @click="open = !open; if(open && !loaded){
+      fetch('/sessions/{{ session.id }}/compare-table')
+        .then(r => r.ok ? r.json() : Promise.reject(r.status))
+        .then(d => { data = d; loaded = true; })
+        .catch(e => { err = '加载失败：' + e; loaded = true; });
+    }">
+    <span>📊 跨论文对比表</span>
+    <span x-text="open ? '▾' : '▸'" class="float-right"></span>
+  </button>
+  <div x-show="open" x-cloak class="p-3 overflow-x-auto">
+    <template x-if="!loaded">
+      <p class="text-sm text-gray-500">加载中…</p>
+    </template>
+    <template x-if="loaded && err">
+      <p class="text-sm text-red-600" x-text="err"></p>
+    </template>
+    <template x-if="loaded && !err && data && data.papers.length === 0">
+      <p class="text-sm text-gray-500">尚无任何论文产出结构化抽取（重新精读会自动生成）。</p>
+    </template>
+    <template x-if="loaded && !err && data && data.papers.length > 0">
+      <div>
+        <table class="min-w-full text-xs border-collapse">
+          <thead class="bg-gray-100">
+            <tr>
+              <th class="border px-2 py-1 text-left">论文</th>
+              <th class="border px-2 py-1 text-left">问题</th>
+              <th class="border px-2 py-1 text-left">方法</th>
+              <th class="border px-2 py-1 text-left">数据集</th>
+              <th class="border px-2 py-1 text-left">关键指标</th>
+              <th class="border px-2 py-1 text-left">Baselines</th>
+              <th class="border px-2 py-1 text-left">局限</th>
+              <th class="border px-2 py-1 text-left">贡献</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="p in data.papers" :key="p.id">
+              <tr class="hover:bg-yellow-50 cursor-pointer"
+                  @click="window.location='/papers/' + p.id">
+                <td class="border px-2 py-1">
+                  <div class="font-medium" x-text="p.title.length > 50 ? p.title.slice(0,50)+'…' : p.title"
+                       :title="p.title"></div>
+                  <div class="text-gray-500" x-text="'相关度 ' + p.relevance_score.toFixed(2)"></div>
+                </td>
+                <td class="border px-2 py-1 max-w-xs"
+                    x-text="p.extraction.problem || '—'"
+                    :title="p.extraction.problem"></td>
+                <td class="border px-2 py-1 max-w-xs"
+                    x-text="p.extraction.methods.join('；') || '—'"
+                    :title="p.extraction.methods.join('；')"></td>
+                <td class="border px-2 py-1 max-w-xs"
+                    x-text="p.extraction.datasets.join('；') || '—'"
+                    :title="p.extraction.datasets.join('；')"></td>
+                <td class="border px-2 py-1 max-w-xs">
+                  <template x-if="p.extraction.metrics.length === 0">
+                    <span>—</span>
+                  </template>
+                  <template x-for="m in p.extraction.metrics" :key="m.name + m.condition">
+                    <div x-text="m.name + ' = ' + m.value + ' @ ' + m.condition"></div>
+                  </template>
+                </td>
+                <td class="border px-2 py-1 max-w-xs"
+                    x-text="p.extraction.baselines.join('；') || '—'"
+                    :title="p.extraction.baselines.join('；')"></td>
+                <td class="border px-2 py-1 max-w-xs"
+                    x-text="p.extraction.limitations.join('；') || '—'"
+                    :title="p.extraction.limitations.join('；')"></td>
+                <td class="border px-2 py-1 max-w-xs"
+                    x-text="p.extraction.contributions.join('；') || '—'"
+                    :title="p.extraction.contributions.join('；')"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        <p x-show="data.missing_count > 0" class="text-xs text-gray-500 mt-2">
+          <span x-text="data.missing_count"></span> 篇论文未抽取（旧分析，点击下方"🔄 重新分析未完成的"按钮即可补齐）。
+        </p>
+      </div>
+    </template>
+  </div>
+</div>
 
 <!-- Paper Grid -->
 <h2 class="text-lg font-semibold mb-3">
@@ -153,10 +240,36 @@
     {% for p in papers %}
     <div class="bg-white rounded-lg border hover:border-indigo-300 hover:shadow-sm transition p-4">
         <a href="/papers/{{ p.id }}" class="block">
-            <h3 class="font-medium text-sm leading-snug mb-2 line-clamp-2">{{ p.title or '(无标题)' }}</h3>
+            <h3 class="font-medium text-sm leading-snug mb-2 line-clamp-2">
+                {% if p.source_platform == 'local' %}<span class="text-xs bg-orange-100 text-orange-700 px-1 py-0.5 rounded mr-1">本地上传</span>{% endif %}
+                {{ p.title or '(无标题)' }}
+            </h3>
             {% set authors = p.authors if p.authors is iterable and p.authors is not string else [] %}
             {% if authors %}
             <p class="text-xs text-gray-500 mb-2">{{ authors[:3] | join(', ') }}{% if authors|length > 3 %} 等{% endif %}</p>
+            {% endif %}
+            {# venue / 来源标签：优先显示会议/期刊，否则回退到来源平台 #}
+            {% if p.venue %}
+            <div class="mb-2">
+                <span class="text-xs px-1.5 py-0.5 rounded inline-block
+                    {% if '[reject]' in p.venue %}bg-red-50 text-red-600{% else %}bg-indigo-50 text-indigo-700{% endif %}"
+                    title="发表会议/期刊">
+                    📍 {{ p.venue }}
+                </span>
+            </div>
+            {% elif p.source_platform and p.source_platform != 'local' %}
+            <div class="mb-2">
+                <span class="text-xs px-1.5 py-0.5 rounded inline-block bg-gray-50 text-gray-500"
+                    title="来源平台">
+                    {% if p.source_platform == 'arxiv' %}arXiv 预印本
+                    {% elif p.source_platform == 'openalex' %}OpenAlex
+                    {% elif p.source_platform == 'crossref' %}CrossRef
+                    {% elif p.source_platform == 'openreview' %}OpenReview
+                    {% elif p.source_platform == 'pmc' %}PubMed Central
+                    {% elif p.source_platform == 'dblp' %}DBLP
+                    {% else %}{{ p.source_platform }}{% endif %}
+                </span>
+            </div>
             {% endif %}
             <div class="flex items-center justify-between mt-2">
                 <span class="text-xs px-1.5 py-0.5 rounded
@@ -179,14 +292,21 @@
         </a>
         {% if p.download_status == 'failed' and p.source_url %}
         <div class="mt-2 pt-2 border-t border-dashed border-gray-200">
-            <p class="text-xs text-gray-500 truncate mb-1">下载源：<a href="{{ p.source_url }}" target="_blank" class="text-indigo-500 underline">{{ p.source_url[:60] }}{% if p.source_url|length > 60 %}...{% endif %}</a></p>
+            <p class="text-xs text-gray-500 truncate mb-1">下载源：<a href="{{ p.source_url }}" target="_blank" rel="noopener noreferrer" class="text-indigo-500 underline">{{ p.source_url[:60] }}{% if p.source_url|length > 60 %}...{% endif %}</a></p>
             <div class="flex gap-1 mt-1">
-                <button hx-post="/papers/{{ p.id }}/retry-download"
-                        hx-swap="outerHTML"
-                        class="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded hover:bg-indigo-200 whitespace-nowrap">
-                    自动重试
-                </button>
+                <form hx-post="/papers/{{ p.id }}/retry-download"
+                      hx-target="this" hx-swap="outerHTML"
+                      hx-indicator="#global-loader"
+                      class="inline">
+                    <input type="hidden" name="_csrf_token" value="">
+                    <button type="submit"
+                            class="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded hover:bg-indigo-200 whitespace-nowrap">
+                        自动重试
+                        <span class="htmx-indicator ml-1 inline-block animate-pulse">⏳</span>
+                    </button>
+                </form>
                 <form method="post" action="/papers/{{ p.id }}/retry-upload" enctype="multipart/form-data" class="flex gap-1 flex-1">
+                    <input type="hidden" name="_csrf_token" value="">
                     <input type="file" name="file" accept=".pdf" required class="text-xs border rounded px-1 py-0.5 w-full">
                     <button type="submit" class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded hover:bg-green-200 whitespace-nowrap">上传补填</button>
                 </form>
@@ -203,6 +323,7 @@
         ⚠️ {{ papers|length - analyzed }} 篇论文尚未生成分析总结
     </span>
     <form method="post" action="/sessions/{{ session.id }}/reanalyze">
+        <input type="hidden" name="_csrf_token" value="">
         <button type="submit" class="bg-yellow-500 text-white px-4 py-1.5 rounded-lg hover:bg-yellow-600 text-sm">
             🔄 重新分析未完成的
         </button>

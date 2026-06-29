@@ -74,12 +74,15 @@ async function loadSparks() {
                 <button onclick="toggleSparkDetail(${s.id})" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">展开详情</button>
                 <button onclick="viewReviews(${s.id})" class="text-xs text-purple-600 hover:text-purple-800">审查记录</button>
                 <button onclick="deepenSpark(${s.id})" class="text-xs text-indigo-600 hover:text-indigo-800">深入展开</button>
+                <button onclick="generateProjectBrief(${s.id})" class="text-xs text-amber-600 hover:text-amber-800">📋 生成项目书</button>
+                <button onclick="loadBriefVersions(${s.id})" class="text-xs text-amber-600 hover:text-amber-800">📚 历史项目书</button>
                 <button onclick="startRoundtable(${s.id})" class="px-3 py-1 bg-purple-600 text-white text-xs rounded hover:bg-purple-700">发起圆桌</button>
                 <button onclick="feedback(${s.id}, 'useful')" class="text-xs text-green-600 hover:text-green-800">有用</button>
                 <button onclick="feedback(${s.id}, 'duplicate')" class="text-xs text-gray-400 hover:text-gray-600">重复</button>
                 <button onclick="feedback(${s.id}, 'noise')" class="text-xs text-gray-400 hover:text-gray-600">无用</button>
             </div>
             <div id="spark-detail-${s.id}" class="hidden mt-3 border-t border-gray-200 pt-3"></div>
+            <div id="brief-panel-${s.id}" class="ideator-brief-panel"></div>
         </div>
     `).join('');
 }
@@ -102,6 +105,106 @@ async function deepenSpark(id) {
         btn.disabled = false;
         btn.textContent = '深入展开';
     }
+}
+
+async function generateProjectBrief(sparkId) {
+    const btn = event.target;
+    const panel = document.getElementById(`brief-panel-${sparkId}`);
+    btn.disabled = true;
+    btn.textContent = '生成中...';
+    panel.innerHTML = '<p class="text-sm text-gray-500 mt-3">⏳ 正在生成项目书…（约 30-60 秒）</p>';
+    try {
+        const resp = await fetch(`/ideator/api/sparks/${sparkId}/project-brief`, { method: 'POST' });
+        const data = await resp.json();
+        if (data.status !== 'done') {
+            panel.innerHTML = '<p class="text-sm text-red-600 mt-3">生成失败，请重试</p>';
+            return;
+        }
+        await loadBriefVersions(sparkId);
+    } catch (e) {
+        panel.innerHTML = `<p class="text-sm text-red-600 mt-3">出错：${escapeHtml(String(e))}</p>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '📋 生成项目书';
+    }
+}
+
+async function loadBriefVersions(sparkId) {
+    const panel = document.getElementById(`brief-panel-${sparkId}`);
+    if (!panel) return;
+    try {
+        const resp = await fetch(`/ideator/api/sparks/${sparkId}/project-briefs`);
+        const data = await resp.json();
+        const briefs = (data.briefs || []).filter(b => b.status === 'done');
+        if (briefs.length === 0) {
+            panel.innerHTML = '<p class="text-xs text-gray-400 mt-3">暂无项目书，点击「生成项目书」创建</p>';
+            return;
+        }
+        // briefs are newest-first (id DESC). Oldest = v1, newest = highest N.
+        const total = briefs.length;
+        const options = briefs.map((b, i) =>
+            `<option value="${b.id}">v${total - i} (${escapeHtml(b.created_at || '')})</option>`
+        ).join('');
+        const selectId = `brief-version-select-${sparkId}`;
+        const contentId = `brief-content-${sparkId}`;
+        panel.innerHTML = `
+          <div class="mt-3 flex items-center gap-2">
+            <label class="text-xs text-gray-500">项目书版本</label>
+            <select id="${selectId}" class="text-xs border border-gray-300 rounded px-2 py-1"
+                    onchange="switchBriefVersion(${sparkId})">${options}</select>
+          </div>
+          <div id="${contentId}"></div>`;
+        // Render newest (first in list) by default.
+        const contentPanel = document.getElementById(contentId);
+        const newest = await (await fetch(`/ideator/api/project-briefs/${briefs[0].id}`)).json();
+        renderBrief(contentPanel, JSON.parse(newest.brief_json));
+    } catch (e) {
+        panel.innerHTML = `<p class="text-sm text-red-600 mt-3">加载项目书出错：${escapeHtml(String(e))}</p>`;
+    }
+}
+
+async function switchBriefVersion(sparkId) {
+    const select = document.getElementById(`brief-version-select-${sparkId}`);
+    const contentPanel = document.getElementById(`brief-content-${sparkId}`);
+    if (!select || !contentPanel) return;
+    const briefId = select.value;
+    try {
+        const full = await (await fetch(`/ideator/api/project-briefs/${briefId}`)).json();
+        renderBrief(contentPanel, JSON.parse(full.brief_json));
+    } catch (e) {
+        contentPanel.innerHTML = `<p class="text-sm text-red-600 mt-3">出错：${escapeHtml(String(e))}</p>`;
+    }
+}
+
+function renderBrief(panel, b) {
+    const fe = b.feasibility || {};
+    const score = fe.score || 0;
+    const stars = '★'.repeat(score) + '☆'.repeat(Math.max(0, 5 - score));
+    const challenges = (fe.main_challenges || []).map((c, i) =>
+        `<li>${escapeHtml(c)} → <em>${escapeHtml((fe.mitigation_strategies || [])[i] || '')}</em></li>`).join('');
+    const phases = ((b.experiment_plan || {}).phases || []).map(p =>
+        `<li><b>${escapeHtml(p.phase)}</b>: ${escapeHtml(p.goal)} <small>(${escapeHtml(p.est_duration || '')})</small></li>`).join('');
+    const risks = ((b.risk_assessment || {}).risks || []).map(r =>
+        `<li class="risk-${escapeHtml(r.severity || 'low')}">[${escapeHtml(r.type || '')}] ${escapeHtml(r.description || '')} — ${escapeHtml(r.mitigation || '')}</li>`).join('');
+    const er = b.expected_results || {};
+    const df = b.differentiation || {};
+    panel.innerHTML = `
+      <div class="brief-card mt-3 p-4 bg-amber-50 rounded border-l-2 border-amber-300 text-sm">
+        <h4>可行性 ${stars} (${score || '?'}/5)</h4>
+        <p>周期：${escapeHtml(fe.estimated_duration || '?')} | 团队：${escapeHtml(fe.team_size || '?')}</p>
+        <ul>${challenges}</ul>
+        <h4>实验计划</h4><ul>${phases}</ul>
+        <h4>预期结果</h4>
+        <p>✅ 成功：${escapeHtml(er.success_scenario || '')}</p>
+        <p>🟡 部分：${escapeHtml(er.partial_scenario || '')}</p>
+        <p>❌ 失败：${escapeHtml(er.failure_scenario || '')} <br>补救：${escapeHtml(er.rescue_plan || '')}</p>
+        <h4>风险</h4><ul>${risks}</ul>
+        <h4>差异化</h4>
+        <p>${escapeHtml(df.vs_existing_work || '')}</p>
+        <p><b>新颖性：</b>${escapeHtml(df.novelty_claim || '')}</p>
+        <p><b>可证伪信号：</b>${escapeHtml(df.signals_to_watch || '')}</p>
+        <p class="evidence-conf">证据信心：${escapeHtml(b.evidence_confidence || '')}</p>
+      </div>`;
 }
 
 async function feedback(id, value) {
@@ -290,7 +393,11 @@ async function toggleSparkDetail(sparkId) {
 
 async function startRoundtable(sparkId) {
     try {
-        const resp = await fetch(`/ideator/api/sparks/${sparkId}/roundtable/start`, { method: 'POST' });
+        const csrfToken = document.cookie.split('; ').find(row => row.startsWith('csrf_token='))?.split('=')[1] || '';
+        const resp = await fetch(`/ideator/api/sparks/${sparkId}/roundtable/start`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': csrfToken },
+        });
         const data = await resp.json();
         if (data.roundtable_id) {
             window.location.href = `/ideator/roundtable/${data.roundtable_id}`;
@@ -413,6 +520,17 @@ function renderRoundMessages(messages) {
     if (!msgArea) return;
     const opt = document.getElementById('rt-optimistic-msg');
     if (opt) opt.remove();
+
+    // Remove streaming bubbles whose persisted counterpart is now in `messages`.
+    // (msgArea.innerHTML = ... below will replace everything anyway, but the
+    // cleanup is explicit so the contract is documented.)
+    messages.forEach(m => {
+        if (m.sender_type === 'model' && m.sender_name && m.round_number) {
+            const sid = `rt-stream-${m.sender_name}-r${m.round_number}`;
+            const stale = document.getElementById(sid);
+            if (stale) stale.remove();
+        }
+    });
 
     const NAMES = SEAT_NAMES;
     const COLS = SEAT_COLORS;
@@ -696,3 +814,185 @@ async function triggerMine() {
 }
 
 if (document.getElementById('spark-list')) loadSparks();
+
+// ── SSE Streaming ─────────────────────────────────────────
+
+// rt_id -> {seat_id -> partial_text}
+window._rtStreamingBuffer = {};
+
+function startRoundtableStream(rtId) {
+    if (window._rtEventSource) {
+        window._rtEventSource.close();
+    }
+    const es = new EventSource(`/ideator/api/roundtables/${rtId}/stream`);
+    window._rtEventSource = es;
+    window._rtStreamingBuffer[rtId] = {};
+
+    es.addEventListener('connected', (e) => {
+        // Optional: console.log('[SSE] connected', e.data);
+    });
+
+    es.addEventListener('outline_update', (e) => {
+        try {
+            const evt = JSON.parse(e.data);
+            renderOutlinePanel(evt.outline, evt.round_number);
+        } catch (_) { /* ignore malformed event */ }
+    });
+
+    es.addEventListener('delta', (e) => {
+        const evt = JSON.parse(e.data);
+        const buf = window._rtStreamingBuffer[rtId];
+        buf[evt.seat_id] = (buf[evt.seat_id] || '') + evt.delta;
+        appendStreamingBubble(evt.seat_id, evt.role, evt.round_number, buf[evt.seat_id]);
+    });
+
+    es.addEventListener('end', (e) => {
+        const evt = JSON.parse(e.data);
+        // raw is authoritative — overrides delta accumulation in case of drops
+        const buf = window._rtStreamingBuffer[rtId];
+        buf[evt.seat_id] = evt.raw;
+        finalizeStreamingBubble(evt.seat_id, evt.role, evt.round_number, evt.raw, evt.msg_id);
+    });
+
+    es.addEventListener('closed', (e) => {
+        // Roundtable was closed server-side; stop reconnecting.
+        stopRoundtableStream();
+    });
+
+    es.addEventListener('error', (e) => {
+        if (e.data) {
+            try {
+                const evt = JSON.parse(e.data);
+                finalizeStreamingBubble(
+                    evt.seat_id, evt.role, evt.round_number,
+                    `[${_streamSeatLabel(evt.seat_id)} 暂时无法回应，请稍后重试]`,
+                    null,
+                );
+            } catch (_) { /* transport-level error; EventSource auto-reconnects */ }
+        }
+    });
+    return es;
+}
+
+function stopRoundtableStream() {
+    if (window._rtEventSource) {
+        window._rtEventSource.close();
+        window._rtEventSource = null;
+    }
+}
+
+function appendStreamingBubble(seatId, role, roundNumber, accumulatedText) {
+    const bubbleId = `rt-stream-${seatId}-r${roundNumber}`;
+    let bubble = document.getElementById(bubbleId);
+    if (!bubble) {
+        bubble = _createStreamingBubble(seatId, role, roundNumber, bubbleId);
+        const msgArea = document.getElementById('rt-messages');
+        if (msgArea) {
+            msgArea.appendChild(bubble);
+            msgArea.scrollTop = msgArea.scrollHeight;
+        }
+    }
+    const textEl = bubble.querySelector('.rt-stream-text');
+    if (textEl) textEl.textContent = accumulatedText;
+}
+
+function finalizeStreamingBubble(seatId, role, roundNumber, raw, msgId) {
+    const bubbleId = `rt-stream-${seatId}-r${roundNumber}`;
+    const bubble = document.getElementById(bubbleId);
+    if (bubble) {
+        bubble.dataset.streamComplete = '1';
+        if (msgId) bubble.dataset.msgId = msgId;
+        const textEl = bubble.querySelector('.rt-stream-text');
+        if (textEl) textEl.textContent = raw;
+        // Promote bubble visuals: stop the "streaming" left border + remove cursor.
+        // Polling will eventually replace this bubble with the persisted message
+        // (same content) via renderRoundMessages cleanup, but until then this
+        // bubble should look done, not in-progress.
+        bubble.classList.remove('rt-message-streaming');
+        bubble.classList.add('rt-message-stream-complete');
+        const cursor = bubble.querySelector('.rt-streaming-cursor');
+        if (cursor) cursor.remove();
+    }
+}
+
+function _createStreamingBubble(seatId, role, roundNumber, id) {
+    const div = document.createElement('div');
+    div.id = id;
+    div.className = 'rt-message rt-message-streaming';
+    const label = _streamSeatLabel(seatId);
+    // Static template (no user content) — innerHTML is safe here
+    div.innerHTML = `
+        <div class="rt-msg-header">
+            <span class="rt-seat-label"></span>
+            <span class="rt-round-tag"></span>
+            <span class="rt-streaming-cursor">●</span>
+        </div>
+        <div class="rt-stream-text"></div>
+    `;
+    div.querySelector('.rt-seat-label').textContent = label;
+    div.querySelector('.rt-round-tag').textContent = `轮次 ${roundNumber}`;
+    return div;
+}
+
+function _streamSeatLabel(seatId) {
+    const labels = {gen:'生成者', rev1:'审查α', rev2:'审查β', rev3:'审查γ',
+                    arb1:'仲裁α', arb2:'仲裁β'};
+    return labels[seatId] || seatId;
+}
+
+// ── Outline (Secretary) ───────────────────────────────────
+
+async function loadInitialOutline(rtId) {
+    try {
+        const resp = await fetch(`/ideator/api/roundtables/${rtId}/outline`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.outline) {
+            renderOutlinePanel(data.outline, data.round_number);
+        } else {
+            renderOutlinePanelEmpty();
+        }
+    } catch (_) {
+        // 静默失败：秘书功能不应阻塞页面渲染
+    }
+}
+
+function renderOutlinePanel(markdown, roundNumber) {
+    const panel = document.getElementById('rt-outline-panel');
+    if (!panel) return;
+    panel.innerHTML = `
+        <div class="rt-outline-header">
+            <span class="rt-outline-title">📋 项目大纲</span>
+            <span class="rt-outline-round"></span>
+        </div>
+        <div class="rt-outline-body"></div>
+    `;
+    const tag = roundNumber ? `轮次 ${roundNumber}` : '';
+    panel.querySelector('.rt-outline-round').textContent = tag;
+    const md = (typeof marked !== 'undefined')
+        ? marked.parse(markdown)
+        : escapeHtmlForOutline(markdown);
+    const clean = (typeof DOMPurify !== 'undefined')
+        ? DOMPurify.sanitize(md)
+        : md;
+    panel.querySelector('.rt-outline-body').innerHTML = clean;
+}
+
+function renderOutlinePanelEmpty() {
+    const panel = document.getElementById('rt-outline-panel');
+    if (!panel) return;
+    panel.innerHTML = `
+        <div class="rt-outline-header">
+            <span class="rt-outline-title">📋 项目大纲</span>
+        </div>
+        <div class="rt-outline-empty">
+            等待首轮讨论完成，秘书将自动生成大纲...
+        </div>
+    `;
+}
+
+function escapeHtmlForOutline(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[c]);
+}

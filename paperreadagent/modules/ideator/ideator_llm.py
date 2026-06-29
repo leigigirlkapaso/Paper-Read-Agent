@@ -9,6 +9,7 @@ reviewer/auditor/roundtable 期望的 chat(model_role, messages, ...) 接口。
 from __future__ import annotations
 
 import logging
+from typing import AsyncGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +27,6 @@ class IdeatorLLM:
 
     def __init__(self, *, core_llm):
         self._core_llm = core_llm
-        self._client = None
-
-    def _get_client(self):
-        if self._client is None:
-            import openai
-            self._client = openai.AsyncOpenAI(
-                api_key=self._core_llm.api_key,
-                base_url=self._core_llm.api_base_url,
-                timeout=self._core_llm.timeout,
-            )
-        return self._client
 
     def model_for(self, role: str) -> str:
         """所有角色统一使用 core.llm 的模型 (deepseek-v4-pro)。"""
@@ -49,33 +39,75 @@ class IdeatorLLM:
         messages: list[dict],
         temperature: float = 0.7,
         max_tokens: int = 16384,
-        response_format: dict | None = None,
-        model: str | None = None,
     ) -> str:
-        model_name = model or self.model_for(model_role)
-        client = self._get_client()
-        kwargs = dict(
-            model=model_name,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        if response_format:
-            kwargs["response_format"] = response_format
+        """委托 core.llm.achat() — 走统一的重试+限流+token 追踪。
+
+        注意: CoreLLM.achat() 不支持 model 覆盖，所有角色统一使用
+        core.llm 配置的模型 (deepseek-v4-pro)。model_for() 返回值
+        仅用于日志/记录目的，不传给 API。
+        """
+        if not messages:
+            raise IdeatorLLMError("chat() called with empty messages list")
+
+        # Convert messages list to user_prompt + system_prompt strings
+        system_parts = []
+        user_parts = []
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "system":
+                system_parts.append(content)
+            elif role == "user":
+                user_parts.append(content)
+            elif role == "assistant":
+                user_parts.append(f"[Assistant]: {content}")
+            elif role == "tool":
+                user_parts.append(
+                    f"[Tool result ({m.get('tool_call_id', '')})]: {content}"
+                )
+
+        system_prompt = "\n\n".join(system_parts) if system_parts else None
+        user_prompt = "\n\n".join(user_parts)
+
         try:
-            resp = await client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            logger.error(f"[IdeatorLLM] {model_role} ({model_name}) call failed: {exc}")
-            raise IdeatorLLMError(f"LLM call failed: {exc}") from exc
-        content = resp.choices[0].message.content or ""
-        reasoning = getattr(resp.choices[0].message, "reasoning_content", None)
-        if not content and reasoning:
-            logger.warning(
-                "[IdeatorLLM] %s (%s): 思考耗尽输出预算 — reasoning=%d chars, content 为空",
-                model_role, model_name, len(reasoning),
+            content, _usage = await self._core_llm.achat(
+                user_prompt=user_prompt,
+                system_prompt=system_prompt,
+                module="ideator",
+                purpose=model_role,
+                max_tokens=max_tokens,
             )
-        return content
+        except Exception as exc:
+            logger.error(f"[IdeatorLLM] {model_role} call failed: {exc}")
+            raise IdeatorLLMError(f"LLM call failed: {exc}") from exc
+
+        return content or ""
 
     def load_prompt(self, module: str, name: str, **variables) -> str:
         """透传 CoreLLM 的 prompt 加载。"""
         return self._core_llm.load_prompt(module, name, **variables)
+
+    async def chat_stream(
+        self,
+        *,
+        model_role: str,
+        messages: list[dict],
+        temperature: float | None = None,
+        max_tokens: int = 32768,
+    ) -> AsyncGenerator[str, None]:
+        """Streaming counterpart to chat(). Yields delta strings.
+
+        NOTE: unlike chat(), no 3-retry-on-JSON-parse logic. Roundtable agent
+        replies are freeform markdown (not JSON), so JSON guardrail is not
+        needed. Network errors propagate to caller (AgentTeam handles them).
+        """
+        if not messages:
+            raise IdeatorLLMError("chat_stream() called with empty messages list")
+        async for delta in self._core_llm.chat_stream(
+            messages,
+            module="ideator",
+            purpose=model_role,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            yield delta

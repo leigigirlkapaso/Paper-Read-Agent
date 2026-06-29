@@ -28,6 +28,7 @@ class EventBus:
 
     def __init__(self):
         self._subscribers: dict[str, list[tuple[str, EventHandler]]] = {}
+        self._dead_letter_count = 0
 
     @evolving
     def subscribe(self, module: str, event_pattern: str, handler: EventHandler) -> None:
@@ -64,13 +65,28 @@ class EventBus:
             try:
                 await handler(event_name, **payload)
             except Exception:
+                self._dead_letter_count += 1
                 logger.exception(
-                    f"[EventBus] {module} 处理 {event_name} 时出错"
+                    f"[EventBus] {module} 处理 {event_name} 时出错 "
+                    f"(死信累计: {self._dead_letter_count})"
                 )
 
-        await asyncio.gather(*[
-            _safe_invoke(m, e, h, d) for m, e, h, d in tasks
-        ])
+        try:
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(_safe_invoke(m, e, h, d))
+                    for m, e, h, d in tasks
+                ],
+                timeout=30,
+            )
+            if pending:
+                logger.error(
+                    f"[EventBus] 事件 {event} 处理超时 (30s)，"
+                    f"已完成 {len(done)}/{len(tasks)} 个处理器，"
+                    f"{len(pending)} 个未完成（未取消）"
+                )
+        except Exception:
+            logger.exception(f"[EventBus] 事件 {event} 分发异常")
 
     @evolving
     def unsubscribe_module(self, module: str) -> None:

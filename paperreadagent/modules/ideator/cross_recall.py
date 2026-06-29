@@ -14,7 +14,7 @@ from .constants import (
     SOURCE_CROSS_PROJECT, SOURCE_CROSS_LAYER, SOURCE_CONTRADICTION,
     SOURCE_RANDOM, SOURCE_TIMELINE,
     LINK_SIMILARITY, LINK_CONTRADICTION, LINK_TEMPORAL,
-    LINK_RANDOM, LINK_CROSS_LAYER,
+    LINK_RANDOM, LINK_CROSS_LAYER, LINK_RANDOM_WALK, LINK_TIMELINE,
 )
 
 logger = logging.getLogger(__name__)
@@ -218,9 +218,18 @@ class CrossRecall:
         # note_pair_scores: {(note_a_id, note_b_id): {"max_sim": float, "matches": [...]}}
         note_pair_scores: dict[tuple, dict] = {}
 
+        # Build lookup: (source_module, note_id) -> paper_id for legacy notes
+        _legacy_paper_id: dict[tuple, int] = {}
+        for insight in insights:
+            if insight.get("source_module") == "legacy":
+                pid = insight.get("paper_id", 0)
+                if pid:
+                    _legacy_paper_id[("legacy", insight["id"])] = pid
+
         for insight_a, ideas_a in notes_with_ideas:
             a_id = insight_a.get("id", 0)
             a_source = insight_a.get("source_module", "literature")
+            a_ref_id = _legacy_paper_id.get((a_source, a_id), a_id)
 
             for idea_a in ideas_a:
                 emb_a = idea_a.get("embedding", [])
@@ -247,17 +256,19 @@ class CrossRecall:
                     if b_source == a_source and b_id == a_id:
                         continue
 
+                    b_ref_id = _legacy_paper_id.get((b_source, b_id), b_id)
+
                     pair_key = (str(a_id), str(b_id))
                     if pair_key not in note_pair_scores:
                         note_pair_scores[pair_key] = {
                             "source_a": {
                                 "type": "core_note" if a_source != "legacy" else "paper",
-                                "id": a_id,
+                                "id": a_ref_id,
                                 "content": insight_a.get("content", "")[:_CANDIDATE_SNIPPET_LEN],
                             },
                             "source_b": {
                                 "type": "core_note" if b_source != "legacy" else "paper",
-                                "id": b_id,
+                                "id": b_ref_id,
                                 "content": "",  # 后续在 pipeline 中解析
                             },
                             "max_similarity": sim,
@@ -313,10 +324,12 @@ class CrossRecall:
         pairs = []
         for note in notes:
             for insight in recent_insights:
+                src_type = "paper" if insight.get("source_module") == "legacy" else "core_note"
+                src_id = insight.get("paper_id") if insight.get("source_module") == "legacy" else insight["id"]
                 pairs.append({
                     "source_a": {"type": "paper", "id": note.get("paper_id", 0),
                                   "content": note.get("content", "")[:_CANDIDATE_SNIPPET_LEN]},
-                    "source_b": {"type": "core_note", "id": insight["id"],
+                    "source_b": {"type": src_type, "id": src_id,
                                   "content": insight["content"][:_CANDIDATE_SNIPPET_LEN]},
                 })
         return pairs
@@ -341,10 +354,12 @@ class CrossRecall:
                 })
         for pa in papers_sample:
             for ins in insight_sample:
+                src_type = "paper" if ins.get("source_module") == "legacy" else "core_note"
+                src_id = ins.get("paper_id") if ins.get("source_module") == "legacy" else ins.get("id", 0)
                 pairs.append({
                     "source_a": {"type": "paper", "id": pa.get("paper_id", 0),
                                   "content": pa.get("content", "")[:_CANDIDATE_SNIPPET_LEN]},
-                    "source_b": {"type": "core_note", "id": ins.get("id", 0),
+                    "source_b": {"type": src_type, "id": src_id,
                                   "content": ins.get("content", "")[:_CANDIDATE_SNIPPET_LEN]},
                 })
         return pairs
@@ -357,10 +372,15 @@ class CrossRecall:
         insights_sorted = sorted(insights, key=lambda x: x.get("created_at", ""))
         pairs = []
         for i in range(len(insights_sorted) - 1):
+            a, b = insights_sorted[i], insights_sorted[i + 1]
+            src_type_a = "paper" if a.get("source_module") == "legacy" else "core_note"
+            src_type_b = "paper" if b.get("source_module") == "legacy" else "core_note"
+            src_id_a = a.get("paper_id") if a.get("source_module") == "legacy" else a["id"]
+            src_id_b = b.get("paper_id") if b.get("source_module") == "legacy" else b["id"]
             pairs.append({
-                "source_a": {"type": "core_note", "id": insights_sorted[i]["id"],
-                              "content": insights_sorted[i]["content"][:_CANDIDATE_SNIPPET_LEN]},
-                "source_b": {"type": "core_note", "id": insights_sorted[i + 1]["id"],
-                              "content": insights_sorted[i + 1]["content"][:_CANDIDATE_SNIPPET_LEN]},
+                "source_a": {"type": src_type_a, "id": src_id_a,
+                              "content": a["content"][:_CANDIDATE_SNIPPET_LEN]},
+                "source_b": {"type": src_type_b, "id": src_id_b,
+                              "content": b["content"][:_CANDIDATE_SNIPPET_LEN]},
             })
         return pairs[:sample_size]

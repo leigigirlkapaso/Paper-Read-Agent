@@ -20,7 +20,9 @@ API 文档：https://api.semanticscholar.org/api-docs/graph
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import re
 import time
 import unicodedata
 
@@ -30,7 +32,8 @@ from agent1.arxiv_searcher import PaperMeta
 
 logger = logging.getLogger(__name__)
 
-_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+_S2_BASE = "https://api.semanticscholar.org/graph/v1"
+_SEARCH_URL = f"{_S2_BASE}/paper/search"
 _FIELDS = ",".join([
     "title", "abstract", "authors", "year", "publicationDate",
     "openAccessPdf", "externalIds", "venue", "url",
@@ -38,6 +41,9 @@ _FIELDS = ",".join([
 _HEADERS = {
     "User-Agent": "PaperReadAgent/1.0 (research tool; contact: paperreadagent@example.com)",
 }
+_RETRY_COUNT = 3
+_RETRY_BASE_DELAY = 5.0
+_RATE_LIMIT_BASE_DELAY = 10.0
 
 
 def search_semantic_scholar(
@@ -76,20 +82,38 @@ def search_semantic_scholar(
     else:
         logger.info(f"[S2] 每条 query 取前 {limit} 篇（无年份过滤）")
 
-    for i, query in enumerate(active_queries):
-        if i > 0:
-            logger.info(f"[S2] 等待 {query_delay:.0f}s（防限流）...")
-            time.sleep(query_delay)
-
-        n_added = _run_query(
-            query=query,
-            limit=limit,
-            min_year=min_year,
-            headers=headers,
-            seen_ids=seen_ids,
-            papers=papers,
+    def _run_isolated(query: str) -> tuple[str, list[PaperMeta], set[str]]:
+        local_papers: list[PaperMeta] = []
+        local_seen: set[str] = set()
+        clean_query = _strip_arxiv_syntax(query)
+        _run_query(
+            query=clean_query, limit=limit, min_year=min_year,
+            headers=headers, seen_ids=local_seen, papers=local_papers,
         )
-        logger.info(f"[S2] {'[+]' if n_added > 0 else '[ ]'} {n_added:>3} 篇  |  {query[:80]}")
+        return (query, local_papers, local_seen)
+
+    max_workers = min(len(active_queries), 4)
+    if max_workers <= 1:
+        for query in active_queries:
+            q, new_papers, new_ids = _run_isolated(query)
+            for p in new_papers:
+                if p.arxiv_id not in seen_ids:
+                    seen_ids.add(p.arxiv_id)
+                    papers.append(p)
+            seen_ids.update(new_ids)
+            logger.info(f"[S2] {'[+]' if new_papers else '[ ]'} {len(new_papers):>3} 篇  |  {q[:80]}")
+            time.sleep(query_delay)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(_run_isolated, q): q for q in active_queries}
+            for future in concurrent.futures.as_completed(future_map):
+                q, new_papers, new_ids = future.result()
+                for p in new_papers:
+                    if p.arxiv_id not in seen_ids:
+                        seen_ids.add(p.arxiv_id)
+                        papers.append(p)
+                seen_ids.update(new_ids)
+                logger.info(f"[S2] {'[+]' if new_papers else '[ ]'} {len(new_papers):>3} 篇  |  {q[:80]}")
 
     logger.info(f"[S2] Semantic Scholar 检索完成，新增 {len(papers)} 篇（去重后）")
     return papers
@@ -112,17 +136,17 @@ def _run_query(
     if min_year > 0:
         params["year"] = f"{min_year}-"   # e.g. "2022-" 表示 2022 年及以后
 
-    for attempt in range(1, 4):
+    for attempt in range(1, _RETRY_COUNT + 1):
         try:
             resp = requests.get(
                 _SEARCH_URL,
                 params=params,
                 headers=headers,
-                timeout=30,
+                timeout=(10, 15),  # (connect, read) fast-fail + retry
             )
             if resp.status_code == 429:
-                wait = 30 * attempt
-                logger.warning(f"[S2] HTTP 429，等待 {wait}s...")
+                wait = _RATE_LIMIT_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(f"[S2] HTTP 429，等待 {wait:.0f}s（指数退避）...")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -130,8 +154,8 @@ def _run_query(
             break
         except (requests.RequestException, ValueError) as e:
             logger.warning(f"[S2] 请求失败（第 {attempt} 次）: {e}")
-            if attempt < 3:
-                time.sleep(5 * attempt)
+            if attempt < _RETRY_COUNT:
+                time.sleep(_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
             else:
                 logger.error(f"[S2] 放弃 query: {query[:60]}")
                 return 0
@@ -217,3 +241,72 @@ def _clean(text: str) -> str:
     """去除多余空白和控制字符。"""
     text = unicodedata.normalize("NFKC", text)
     return " ".join(text.split())
+
+
+def _strip_arxiv_syntax(query: str) -> str:
+    """去除 arxiv 专有语法，保留核心词组用于 Semantic Scholar 自然语言检索。"""
+    q = re.sub(r'\b(all|ti|abs|au|cat):', '', query)
+    q = q.replace('"', '')
+    q = re.sub(r'\bAND\b|\bOR\b', ' ', q)
+    q = ' '.join(q.split())
+    return q
+
+
+def _s2_external_id(paper) -> str | None:
+    """S2 graph id for a PaperMeta: ARXIV:<id> or DOI:<doi>, else None."""
+    from utils.paper_dedup import extract_identifiers
+    ids = extract_identifiers(paper)
+    if ids.get("arxiv_id"):
+        return f"ARXIV:{ids['arxiv_id']}"
+    if ids.get("doi"):
+        return f"DOI:{ids['doi']}"
+    return None
+
+
+def _s2_obj_to_paper(obj: dict):
+    """Map an S2 paper object to PaperMeta. Returns None without title/abstract."""
+    title = (obj.get("title") or "").strip()
+    abstract = (obj.get("abstract") or "").strip()
+    if not title or not abstract:
+        return None
+    ext = obj.get("externalIds") or {}
+    arxiv = ext.get("ArXiv")
+    doi = (ext.get("DOI") or "")
+    # synthetic key uses s2_ prefix (matches main path) to avoid the OpenAlex oa_ namespace,
+    # which extract_identifiers would otherwise mis-tag as an OpenAlex entity id
+    aid = arxiv if arxiv else f"s2_{obj.get('paperId', '')}"
+    year = obj.get("year")
+    return PaperMeta(
+        arxiv_id=aid, title=title,
+        authors=[a.get("name", "") for a in (obj.get("authors") or []) if a.get("name")],
+        published=(f"{year}-01-01" if year else "unknown"),
+        abstract=abstract,
+        pdf_url=(f"https://arxiv.org/pdf/{arxiv}" if arxiv else ""),
+        arxiv_url=(f"https://arxiv.org/abs/{arxiv}" if arxiv else ""),
+        doi=doi.replace("https://doi.org/", ""),
+        citation_count=int(obj.get("citationCount") or 0),
+    )
+
+
+def fetch_neighbors_s2(paper, limit: int = 25) -> list:
+    """Fallback bidirectional 1-hop neighbors via Semantic Scholar graph API.
+    Returns [] on any failure (best-effort)."""
+    ext_id = _s2_external_id(paper)
+    if not ext_id:
+        return []
+    fields = "title,abstract,externalIds,year,authors,citationCount"
+    out = []
+    try:
+        for direction, key in (("references", "citedPaper"), ("citations", "citingPaper")):
+            url = f"{_S2_BASE}/paper/{ext_id}/{direction}"
+            resp = requests.get(url, params={"fields": fields, "limit": min(limit, 100)},
+                                headers=_HEADERS, timeout=(10, 15))
+            resp.raise_for_status()
+            for row in resp.json().get("data", []):
+                p = _s2_obj_to_paper(row.get(key) or {})
+                if p is not None:
+                    out.append(p)
+    except Exception as e:
+        logger.warning(f"[S2-graph] fallback failed: {e}")
+        return []
+    return out

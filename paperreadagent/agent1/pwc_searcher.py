@@ -19,6 +19,7 @@ API 文档：https://paperswithcode.com/api/v1/docs/
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
 import time
@@ -33,6 +34,8 @@ _BASE_URL = "https://paperswithcode.com/api/v1"
 _HEADERS = {
     "User-Agent": "PaperReadAgent/1.0 (research tool)",
 }
+_RETRY_429_MAX = 3
+_RATE_LIMIT_BASE_DELAY = 15.0
 
 
 def search_pwc(
@@ -61,24 +64,40 @@ def search_pwc(
 
     logger.info(f"[PwC] 开始检索，共 {len(active_queries)} 条 query")
 
-    for i, query in enumerate(active_queries):
-        if i > 0:
-            logger.info(f"[PwC] 等待 {query_delay:.0f}s（防限流）...")
-            time.sleep(query_delay)
-
-        # PwC 的 query 需要去掉 arxiv 特有语法（all:, ti:, abs: 等）
+    def _run_isolated(query: str) -> tuple[str, list[PaperMeta], set[str]]:
         clean_query = _strip_arxiv_syntax(query)
         if not clean_query:
-            continue
-
-        n_added = _run_query(
-            query=clean_query,
-            limit=max_results_per_query,
-            min_year=min_year,
-            seen_ids=seen_ids,
-            papers=papers,
+            return (query, [], set())
+        local_papers: list[PaperMeta] = []
+        local_seen: set[str] = set()
+        _run_query(
+            query=clean_query, limit=max_results_per_query, min_year=min_year,
+            seen_ids=local_seen, papers=local_papers,
         )
-        logger.info(f"[PwC] {'[+]' if n_added > 0 else '[ ]'} {n_added:>3} 篇  |  {clean_query[:80]}")
+        return (clean_query, local_papers, local_seen)
+
+    max_workers = min(len(active_queries), 4)
+    if max_workers <= 1:
+        for query in active_queries:
+            q, new_papers, new_ids = _run_isolated(query)
+            for p in new_papers:
+                if p.arxiv_id not in seen_ids:
+                    seen_ids.add(p.arxiv_id)
+                    papers.append(p)
+            seen_ids.update(new_ids)
+            logger.info(f"[PwC] {'[+]' if new_papers else '[ ]'} {len(new_papers):>3} 篇  |  {q[:80]}")
+            time.sleep(query_delay)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(_run_isolated, q): q for q in active_queries}
+            for future in concurrent.futures.as_completed(future_map):
+                q, new_papers, new_ids = future.result()
+                for p in new_papers:
+                    if p.arxiv_id not in seen_ids:
+                        seen_ids.add(p.arxiv_id)
+                        papers.append(p)
+                seen_ids.update(new_ids)
+                logger.info(f"[PwC] {'[+]' if new_papers else '[ ]'} {len(new_papers):>3} 篇  |  {q[:80]}")
 
     logger.info(f"[PwC] Papers With Code 检索完成，新增 {len(papers)} 篇（去重后）")
     return papers
@@ -109,15 +128,16 @@ def _run_query(
                     "ordering": "-arxiv_id",
                 },
                 headers=_HEADERS,
-                timeout=30,
+                timeout=(10, 15),  # (connect, read) fast-fail + retry
             )
             if resp.status_code == 429:
-                if retry_429 >= 3:
+                if retry_429 >= _RETRY_429_MAX:
                     logger.error("[PwC] HTTP 429 重试耗尽，放弃此查询")
                     break
                 retry_429 += 1
-                logger.warning(f"[PwC] HTTP 429，等待 30s...（{retry_429}/3）")
-                time.sleep(30)
+                wait = _RATE_LIMIT_BASE_DELAY * (2 ** (retry_429 - 1))
+                logger.warning(f"[PwC] HTTP 429，等待 {wait:.0f}s（指数退避）...（{retry_429}/{_RETRY_429_MAX}）")
+                time.sleep(wait)
                 continue
             if resp.status_code == 404:
                 break
@@ -176,11 +196,12 @@ def _run_query(
             papers.append(PaperMeta(
                 arxiv_id=clean_id,
                 title=(item.get("title") or "").replace("\n", " ").strip(),
-                authors=[],   # PwC 搜索结果不直接含作者列表（可二次请求获取，暂跳过）
+                authors=["Unknown"],  # PwC /papers/ 列表不含作者，需 /papers/{id}/ 二次查询
                 published=pub_date[:10] if len(pub_date) >= 10 else (str(year) if year else "unknown"),
                 abstract=abstract,
                 pdf_url=pdf_url,
                 arxiv_url=paper_url,
+                code_url=repo,
             ))
             n_added += 1
             collected += 1

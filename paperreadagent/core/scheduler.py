@@ -136,6 +136,10 @@ class CoreScheduler:
             )
 
     def start(self) -> None:
+        """启动调度器。幂等：已启动时跳过。"""
+        if self._scheduler is not None:
+            return
+
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         self._scheduler = AsyncIOScheduler(timezone=self._timezone)
         self._scheduler.start()
@@ -146,4 +150,5 @@ class CoreScheduler:
         if hasattr(self, "_pending_jobs"):
             del self._pending_jobs
 
-        logger.info("[Scheduler] APScheduler 已启动")
+        logger.info("[Scheduler] APScheduler 已启动 (%d pending jobs flushed)",
+                    len(self._jobs))

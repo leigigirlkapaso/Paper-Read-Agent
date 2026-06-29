@@ -45,7 +45,7 @@ async def thinker_page(request: Request):
     web_tpl_dir = _Path(__file__).parent.parent.parent / "web" / "templates"
     env = Environment(loader=FileSystemLoader([str(tpl_dir), str(web_tpl_dir)]))
     tpl = Jinja2Templates(env=env)
-    return tpl.TemplateResponse("thinker_page.html", {"request": request})
+    return tpl.TemplateResponse(request, "thinker_page.html", {})
 
 
 @router.get("/api/conversations")
@@ -135,6 +135,7 @@ async def close_conversation(request: Request, conversation_id: int):
     summary_id, resolution_ids = await asyncio.gather(
         engine.generate_summary(conversation_id),
         engine.extract_resolutions(conversation_id),
+        return_exceptions=True,
     )
     await engine.close_conversation(conversation_id)
     return JSONResponse({

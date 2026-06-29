@@ -107,7 +107,7 @@ class CoreFrontend:
             module_name = comp.template.split("/")[0]
             template_base = Path("paperreadagent/modules") / module_name / "templates"
             if template_base.exists():
-                env = Environment(loader=FileSystemLoader(str(template_base)))
+                env = Environment(loader=FileSystemLoader(str(template_base)), autoescape=True)
                 try:
                     tmpl_name = comp.template.split("/", 1)[1]
                     tmpl = env.get_template(tmpl_name)

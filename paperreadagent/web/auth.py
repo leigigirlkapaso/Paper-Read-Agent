@@ -134,6 +134,28 @@ class LoginGuard:
         return (last_failure + BLOCK_MINUTES * 60) > now
 
 
+# ── CSRF 保护（Double-Submit Cookie 模式）────────────────────
+
+CSRF_COOKIE = "pra_csrf"
+CSRF_HEADER = "X-CSRF-Token"
+_CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_CSRF_EXEMPT_PATHS = frozenset({"/login", "/logout"})
+_CSRF_TOKEN_BYTES = 32
+
+
+def generate_csrf_token() -> str:
+    """生成随机 CSRF token（url-safe base64）。"""
+    import secrets as _s
+    return _s.token_urlsafe(_CSRF_TOKEN_BYTES)
+
+
+def validate_csrf(request, cookie_token: str | None, form_token: str | None) -> bool:
+    """验证 double-submit cookie 一致性。使用 hmac.compare_digest 防时序攻击。"""
+    if not cookie_token or not form_token:
+        return False
+    return hmac.compare_digest(cookie_token, form_token)
+
+
 # ── Task 4 集成辅助 ────────────────────────────────────────
 
 logger = logging.getLogger(__name__)

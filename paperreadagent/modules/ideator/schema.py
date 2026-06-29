@@ -2,7 +2,7 @@
 modules/ideator/schema.py
 """
 
-LATEST_VERSION = 10
+LATEST_VERSION = 13
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -376,5 +376,38 @@ MIGRATIONS: dict[int, str] = {
         ON ideator_cross_links(relevance_score DESC);
     CREATE INDEX IF NOT EXISTS idx_ideator_links_spark
         ON ideator_cross_links(spark_id);
+    """,
+    11: """
+    ALTER TABLE ideator_sparks ADD COLUMN verdict TEXT DEFAULT '';
+    """,
+    12: """
+    CREATE TABLE IF NOT EXISTS ideator_project_briefs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        spark_id INTEGER NOT NULL REFERENCES ideator_sparks(id),
+        status TEXT NOT NULL DEFAULT 'generating'
+            CHECK(status IN ('generating','done','failed')),
+        brief_json TEXT NOT NULL DEFAULT '{}',
+        context_sources TEXT NOT NULL DEFAULT '{}',
+        model_name TEXT NOT NULL DEFAULT '',
+        token_usage TEXT NOT NULL DEFAULT '{}',
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_briefs_spark
+        ON ideator_project_briefs(spark_id);
+    """,
+    13: """
+    CREATE TABLE IF NOT EXISTS ideator_roundtable_outlines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rt_id INTEGER NOT NULL REFERENCES ideator_roundtables(id),
+        round_number INTEGER NOT NULL DEFAULT 1,
+        outline_markdown TEXT NOT NULL DEFAULT '',
+        facts_block TEXT NOT NULL DEFAULT '',
+        model_name TEXT NOT NULL DEFAULT '',
+        token_usage TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_rt_outlines_rt
+        ON ideator_roundtable_outlines(rt_id, round_number);
     """,
 }

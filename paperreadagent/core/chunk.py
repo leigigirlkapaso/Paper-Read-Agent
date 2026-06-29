@@ -110,7 +110,7 @@ def _build_chunks(
 
         if end >= len(text):
             break
-        start = end - overlap
+        start = max(0, end - overlap)
 
     # Merge undersized tail chunk with previous
     if len(chunks) >= 2 and len(chunks[-1]["text"]) < min_size:

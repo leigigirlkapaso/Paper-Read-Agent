@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}PaperReadAgent{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📄</text></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
@@ -14,9 +15,10 @@
     {% block head %}{% endblock %}
 </head>
 <body class="bg-gray-50 text-gray-900 min-h-screen">
-    <!-- Navigation -->
+    <!-- Navigation (hidden on login page) -->
+    {% if request.state.is_authenticated %}
     <nav class="bg-white shadow-sm border-b border-gray-200 desktop-only">
-        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="mx-auto px-4 py-3 flex items-center justify-between">
             <a href="/projects/" class="text-xl font-bold text-indigo-600 hover:text-indigo-800">
                 📚 PaperReadAgent
             </a>
@@ -30,10 +32,11 @@
             </div>
         </div>
     </nav>
+    {% endif %}
 
     <!-- Flash Messages -->
     {% if messages %}
-    <div class="max-w-7xl mx-auto px-4 mt-4">
+    <div class="mx-auto px-4 mt-4">
         {% for msg in messages %}
         <div class="p-3 rounded-lg text-sm mb-2
             {% if msg.type == 'error' %}bg-red-100 text-red-800
@@ -46,12 +49,58 @@
     {% endif %}
 
     <!-- Content -->
-    <main class="max-w-[96vw] mx-auto px-4 py-6">
+    <main class="mx-auto px-6 py-6">
         {% block content %}{% endblock %}
     </main>
 
-    <!-- Mobile bottom navigation -->
+    <!-- Mobile bottom navigation (hidden on login page) -->
+    {% if request.state.is_authenticated %}
     {% include "mobile_nav.html" %}
+    {% endif %}
+
+    <!-- Global HTMX loading indicator -->
+    <div id="global-loader" class="htmx-indicator fixed top-0 left-0 w-full h-1 z-[9999]">
+        <div class="h-full bg-indigo-500 animate-pulse" style="width: 60%; animation: htmx-loader 1.5s ease-in-out infinite;"></div>
+    </div>
+
+    <!-- CSRF auto-injection: reads pra_csrf cookie and adds _csrf_token to all POST forms -->
+    <meta name="csrf-token" content="">
+    <script>
+    (function() {
+        function getCookie(name) {
+            var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+            return v ? decodeURIComponent(v.pop()) : '';
+        }
+
+        // FIX: Cookie read moved INSIDE handler — reads fresh on every submit,
+        // so the first page after login (where Set-Cookie just arrived) works.
+        // Also handles case where template already has a hidden _csrf_token input
+        // with empty value (populated by this handler on submit).
+        document.addEventListener('submit', function(e) {
+            var form = e.target;
+            if (form.method && form.method.toLowerCase() === 'post') {
+                var csrf = getCookie('pra_csrf');
+                if (!csrf) return;
+                var input = form.querySelector('input[name="_csrf_token"]');
+                if (!input) {
+                    input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = '_csrf_token';
+                    form.appendChild(input);
+                }
+                input.value = csrf;
+            }
+        }, true);
+
+        // HTMX AJAX: inject CSRF token as X-CSRF-Token header on every request
+        document.body.addEventListener('htmx:configRequest', function(evt) {
+            var csrf = getCookie('pra_csrf');
+            if (csrf) {
+                evt.detail.headers['X-CSRF-Token'] = csrf;
+            }
+        });
+    })();
+    </script>
 
     {{ request.state.core_body_end_inject | default('') | safe }}
     {{ request.state.core_scripts_inject | default('') | safe }}

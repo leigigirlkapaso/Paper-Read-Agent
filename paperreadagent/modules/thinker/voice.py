@@ -63,16 +63,28 @@ class VoiceEngine:
     def __init__(self, core):
         self._voice = core.voice
 
+    def _check_available(self) -> bool:
+        if self._voice is None:
+            logger.warning("[VoiceEngine] 语音服务未配置（core.voice 为 None），跳过")
+            return False
+        return True
+
     async def transcribe(self, audio_bytes: bytes, format: str = "webm") -> str:
+        if not self._check_available():
+            return ""
         format = _normalize_format(format)
         return await self._voice.transcribe(audio_bytes, format)
 
     async def transcribe_stream(self, audio_bytes: bytes, format: str = "webm"):
+        if not self._check_available():
+            return
         format = _normalize_format(format)
         async for chunk in self._voice.transcribe_stream(audio_bytes, format):
             yield chunk
 
     async def synthesize(self, text: str) -> bytes:
+        if not self._check_available():
+            return b""
         return await self._voice.synthesize(text)
 
     def _extract_webm_header(self, data: bytes) -> bytes:

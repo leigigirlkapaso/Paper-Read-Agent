@@ -270,6 +270,37 @@ class Database:
             results.append(d)
         return results
 
+    def get_session_extractions(self, session_id: int) -> list[dict]:
+        """Return papers with non-null extraction_json, ordered by relevance desc.
+        Each row: {id, arxiv_id, title, relevance_score, extraction (dict)}.
+        Malformed JSON rows are skipped (not raised)."""
+        rows = self.conn.execute(
+            """
+            SELECT id, arxiv_id, title, relevance_score, extraction_json
+            FROM papers
+            WHERE session_id = ? AND extraction_json IS NOT NULL
+            ORDER BY relevance_score DESC, id ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        results = []
+        for r in rows:
+            extraction = _safe_json_loads(r["extraction_json"], default=None)
+            if not isinstance(extraction, dict):
+                logger.debug(
+                    "[Database] 跳过 extraction_json 解析为非 dict: arxiv=%s",
+                    r["arxiv_id"],
+                )
+                continue
+            results.append({
+                "id": r["id"],
+                "arxiv_id": r["arxiv_id"],
+                "title": r["title"],
+                "relevance_score": r["relevance_score"],
+                "extraction": extraction,
+            })
+        return results
+
     def get_paper(self, paper_id: int) -> dict | None:
         row = self.conn.execute(
             "SELECT * FROM papers WHERE id = ?", (paper_id,)
@@ -503,7 +534,13 @@ class Database:
         return [dict(r) for r in rows]
 
     def get_cross_project_graph(self) -> dict:
-        """返回项目关系图数据：节点（项目+大小）和边（共享论文数）。"""
+        """Deprecated since 2026-06-23: superseded by GraphBuilderService
+        (paperreadagent/web/services/graph_builder.py). Kept for back-compat
+        in case external scripts call this. The /graph route no longer uses
+        this; it calls GET /api/graph/data instead.
+
+        返回项目关系图数据：节点（项目+大小）和边（共享论文数）。
+        """
         # 节点：每个项目的论文数和笔记数
         node_rows = self.conn.execute(
             """

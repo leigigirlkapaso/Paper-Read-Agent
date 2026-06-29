@@ -5,9 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>圆桌讨论 — Ideator</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/17.0.0/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
     <link rel="stylesheet" href="/ideator/static/ideator.css">
 </head>
 <body class="bg-gray-50 h-screen flex flex-col">
+    <div class="rt-layout" style="flex:1; min-height:0;">
+        <div class="rt-main" style="flex:1; display:flex; flex-direction:column; min-width:0;">
     <nav class="bg-white shadow-sm border-b border-gray-200 shrink-0">
         <div class="px-4 py-2 flex items-center justify-between">
             <div class="flex items-center gap-3">
@@ -61,6 +65,9 @@
             <button id="rt-send-btn" onclick="askRoundtable(window._rtId)" class="bg-indigo-600 text-white px-4 py-2 rounded text-sm hover:bg-indigo-700">提问</button>
         </div>
     </div>
+        </div>
+        <aside id="rt-outline-panel" class="rt-outline-panel"></aside>
+    </div>
 
     <script src="/ideator/static/ideator.js?v=2"></script>
     <script>
@@ -69,14 +76,22 @@
         if (rtId) {
             window._rtId = rtId;
             window._rtLastMsgCount = 0;
+            // Polling for meta-state (watermark / seats / persisted messages)
             window._rtPollInterval = setInterval(() => pollRoundtableState(rtId), 5000);
             pollRoundtableState(rtId);
+            // SSE for token-by-token agent reply streaming
+            startRoundtableStream(rtId);
+            loadInitialOutline(rtId);
         }
 
         function closeCurrentRoundtable() {
+            stopRoundtableStream();
             fetch(`/ideator/api/roundtables/${window._rtId}/close`, {method:'POST'}).catch(()=>{});
             window.location.href = '/ideator/';
         }
+
+        // Stop SSE on tab close / back-forward navigation
+        window.addEventListener('beforeunload', () => stopRoundtableStream());
     </script>
 </body>
 </html>

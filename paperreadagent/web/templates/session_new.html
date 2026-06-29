@@ -8,7 +8,9 @@
 </div>
 
 <form method="post" action="/sessions/start/{{ project.id }}"
-      x-data="configForm()" class="space-y-6">
+      x-data="configForm()" class="space-y-6"
+      x-on:submit="$el.querySelector('button[type=submit]').disabled = true">
+    <input type="hidden" name="_csrf_token" value="">
     <!-- Mode selection -->
     <div class="bg-white rounded-xl shadow-sm border p-5">
         <h2 class="font-semibold mb-3">运行模式</h2>
@@ -102,16 +104,13 @@
                 <input type="checkbox" x-model="source_arxiv" checked class="text-indigo-600"> arxiv
             </label>
             <label class="flex items-center gap-2 cursor-pointer text-sm">
-                <input type="checkbox" x-model="source_s2" class="text-indigo-600"> Semantic Scholar
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer text-sm">
-                <input type="checkbox" x-model="source_pwc" class="text-indigo-600"> Papers With Code
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer text-sm">
                 <input type="checkbox" x-model="source_oa" class="text-indigo-600"> OpenAlex
             </label>
             <label class="flex items-center gap-2 cursor-pointer text-sm">
                 <input type="checkbox" x-model="source_dblp" class="text-indigo-600"> DBLP
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" x-model="source_pmc" checked class="text-indigo-600"> Europe PMC
             </label>
         </div>
     </div>
@@ -129,9 +128,10 @@
 </form>
 
 {% block scripts %}
+<script type="application/json" id="payload-data">{{ form_defaults | tojson }}</script>
 <script>
 function configForm() {
-    const _defaults = {{ form_defaults_json | safe }};
+    const _defaults = JSON.parse(document.getElementById('payload-data').textContent);
     return {
         topic: _defaults.topic || '在此填写你的研究构想...',
         api_base_url: _defaults.api_base_url || 'https://api.deepseek.com',
@@ -171,14 +171,13 @@ function configForm() {
 
 **与我研究的相结合的可能性**（不少于 300 字）：基于以上全部分析，如果我的研究与该论文合作开展，能形成什么新研究问题、新方法或新应用场景，可能的研究合作框架与预期价值是什么。`,
         source_arxiv: true,
-        source_s2: false,
-        source_pwc: false,
         source_oa: false,
-        source_dblp: false,
+        source_dblp: true,
+        source_pmc: true,
         assembledYaml() {
             let topic = this.topic.replace(/\n/g, '\n    ');
             let sp = this.summary_prompt.replace(/\n/g, '\n    ');
-            return `llm:\n  api_base_url: "${this.api_base_url}"\n  api_key: "${this.api_key}"\n  model_name: "${this.model_name}"\n  temperature: ${this.temperature}\n\nresearch:\n  topic: |\n    ${topic}\n  max_search_results: ${this.max_search_results}\n  min_search_results: ${this.min_search_results}\n  max_queries: ${this.max_queries}\n  query_delay: ${this.query_delay}\n  max_download_papers: ${this.max_download_papers}\n  relevance_threshold: ${this.relevance_threshold}\n  search_batch_size: 10\n  filter_max_concurrent: 100\n  sort_by: "${this.sort_by}"\n  min_year: ${this.min_year}\n\nconcurrency:\n  max_concurrent: ${this.max_concurrent}\n\nsources:\n  arxiv: ${this.source_arxiv}\n  semantic_scholar: ${this.source_s2}\n  papers_with_code: ${this.source_pwc}\n  openalex: ${this.source_oa}\n  s2_api_key: ""\n  s2_max_per_query: 100\n  s2_query_delay: 3.0\n  pwc_max_per_query: 100\n  pwc_query_delay: 2.0\n  oa_max_per_query: 100\n  oa_query_delay: 2.0\n  dblp: ${this.source_dblp}\n  dblp_max_per_query: 100\n  dblp_query_delay: 2.0\n\npdf:\n  max_chars: ${this.max_chars}\n\nsummary_prompt: |\n    ${sp}\n`;
+            return `llm:\n  api_base_url: "${this.api_base_url}"\n  api_key: "${this.api_key}"\n  model_name: "${this.model_name}"\n  temperature: ${this.temperature}\n\nresearch:\n  topic: |\n    ${topic}\n  max_search_results: ${this.max_search_results}\n  min_search_results: ${this.min_search_results}\n  max_queries: ${this.max_queries}\n  query_delay: ${this.query_delay}\n  max_download_papers: ${this.max_download_papers}\n  relevance_threshold: ${this.relevance_threshold}\n  search_batch_size: 10\n  filter_max_concurrent: 100\n  sort_by: "${this.sort_by}"\n  min_year: ${this.min_year}\n\nconcurrency:\n  max_concurrent: ${this.max_concurrent}\n\nsources:\n  arxiv: ${this.source_arxiv}\n  openalex: ${this.source_oa}\n  oa_max_per_query: 100\n  oa_query_delay: 2.0\n  dblp: ${this.source_dblp}\n  dblp_max_per_query: 100\n  dblp_query_delay: 2.0\n  pmc: ${this.source_pmc}\n  pmc_max_per_query: 100\n  pmc_query_delay: 1.0\n\npdf:\n  max_chars: ${this.max_chars}\n\nsummary_prompt: |\n    ${sp}\n`;
         }
     }
 }

@@ -24,12 +24,12 @@ def test_v3_adds_session_version_column():
     conn.executescript(CORE_MIGRATIONS[1])
     conn.executescript(CORE_MIGRATIONS[2])
     conn.executescript(CORE_MIGRATIONS[3])
-    # verify session_version exists and defaults to 0
+    # verify session_version exists and defaults to 1
     conn.execute("INSERT INTO core_users (id, password_hash) VALUES (1, 'hash1')")
     conn.commit()
     row = conn.execute("SELECT session_version FROM core_users WHERE id = 1").fetchone()
     assert row is not None
-    assert row["session_version"] == 0
+    assert row["session_version"] == 1
     conn.close()
 
 def test_core_users_single_row_enforcement():

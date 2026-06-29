@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import logging
 import re
+import urllib.request
+import urllib.error
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pymupdf4llm
 
@@ -70,7 +73,7 @@ def parse_pdf(
         if md_text:
             if len(md_text) <= max_chars:
                 return md_text
-            return _truncate_smart(md_text, max_chars)
+            return _truncate_smart(md_text, max_chars, pdf_path if pdf_path.exists() else None)
         logger.info(f"[PDFParser] ar5iv 不可用，回退 PDF 解析: {arxiv_id}")
 
     # ── PDF 解析 ─────────────────────────────────────────────
@@ -91,7 +94,7 @@ def parse_pdf(
         f"超过 {max_chars}，自动截取关键段落。"
     )
 
-    return _truncate_smart(md_text, max_chars)
+    return _truncate_smart(md_text, max_chars, pdf_path)
 
 
 # ── ar5iv HTML parser ────────────────────────────────────────
@@ -104,6 +107,10 @@ def _try_ar5iv(arxiv_id: str) -> str | None:
     """
     import urllib.request
     import urllib.error
+
+    # ── Fast pre-check：跳过明显非 arXiv 的 ID（省 30s timeout）──
+    if not _ARXIV_ID_PATTERN.search(arxiv_id):
+        return None
 
     url = f"https://ar5iv.labs.arxiv.org/html/{arxiv_id}"
     try:
@@ -148,16 +155,16 @@ def _clean_ar5iv_markdown(md: str) -> str:
 
 # ── Truncation helpers ───────────────────────────────────────
 
-def _truncate_smart(md_text: str, max_chars: int) -> str:
+def _truncate_smart(md_text: str, max_chars: int, pdf_path: Path | None = None) -> str:
     """Truncate to max_chars, preferring abstract + intro + conclusion."""
     # 优先用正则定位章节
     sections = _extract_key_sections(md_text, max_chars)
 
     # 回退：正则匹配不足时，使用 PDF 内建目录
-    if len(sections) <= 1:
+    if len(sections) <= 1 and pdf_path is not None:
         logger.info("[PDFParser] 正则匹配不足，尝试 TOC 回退...")
         try:
-            toc_sections = _extract_key_sections_from_toc(md_text, max_chars)
+            toc_sections = _extract_key_sections_from_toc(pdf_path, max_chars)
             if len(toc_sections) > len(sections):
                 sections = toc_sections
         except Exception as e:
@@ -220,11 +227,13 @@ def _find_next_heading_start(md_text: str, start_pos: int) -> int:
     return match.start() if match else -1
 
 
-def _extract_key_sections_from_toc(pdf_path: Path, max_chars: int) -> list[str]:
+def _extract_key_sections_from_toc(pdf_path: Path | None, max_chars: int) -> list[str]:
     """
     使用 pymupdf4llm page_chunks 模式读取 PDF 内建目录，
     按 TOC 条目精确定位 Introduction/Conclusion 的页码范围。
     """
+    if pdf_path is None:
+        return []
     chunks = pymupdf4llm.to_markdown(str(pdf_path), page_chunks=True)
 
     intro_page: int | None = None
@@ -296,3 +305,143 @@ def _extract_key_sections_from_toc(pdf_path: Path, max_chars: int) -> list[str]:
             sections.append(concl_text[:budget_conclusion])
 
     return sections
+
+
+# ── PMC XML → Markdown converter ───────────────────────────────
+
+def _try_pmc_xml(pmcid: str) -> str | None:
+    """尝试从 European PMC 获取全文 XML，并转换为 Markdown。
+
+    提取 <body> 内容，将 JATS XML 基本结构转换为 Markdown：
+    - <sec><title> → ### 标题
+    - <p> → 段落
+    - <fig><caption> → > **Figure**: 说明
+    - <xref>, <sup>, <sub>, <italic>, <bold> → 保留文本，去除标签
+    - <table-wrap> → 跳过
+
+    Returns:
+        Markdown 字符串，失败返回 None
+    """
+    url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "PaperReadAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            xml_text = resp.read().decode("utf-8")
+    except Exception as e:
+        logger.warning(f"[PDFParser] PMC XML fetch failed for {pmcid}: {e}")
+        return None
+
+    if not xml_text or len(xml_text) < 500:
+        return None
+
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception as e:
+        logger.warning(f"[PDFParser] PMC XML parse failed for {pmcid}: {e}")
+        return None
+
+    # Find <body> element (handle JATS namespace via local name matching)
+    body = _find_elem_by_local(root, "body")
+    if body is None:
+        logger.warning(f"[PDFParser] PMC XML has no <body>: {pmcid}")
+        return None
+
+    # Convert body children to Markdown lines
+    md_lines: list[str] = []
+    for child in body:
+        _pmc_block_to_markdown(child, md_lines)
+
+    md_text = "\n\n".join(md_lines)
+    if not md_text or len(md_text) < 100:
+        return None
+
+    logger.info(f"[PDFParser] PMC XML OK: {pmcid}, {len(md_text)} chars")
+    return md_text
+
+
+def _find_elem_by_local(elem: ET.Element, local_name: str) -> ET.Element | None:
+    """递归查找第一个本地标签名匹配的后代元素（忽略 XML 命名空间）。"""
+    if elem.tag.split("}")[-1] == local_name:
+        return elem
+    for child in elem:
+        found = _find_elem_by_local(child, local_name)
+        if found is not None:
+            return found
+    return None
+
+
+def _local_tag(elem: ET.Element) -> str:
+    """返回去除 XML 命名空间前缀的本地标签名。"""
+    return elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+
+
+def _pmc_block_to_markdown(elem: ET.Element, lines: list[str]) -> None:
+    """递归将 PMC JATS XML 块级元素转换为 Markdown 行。
+
+    仅处理块级结构；内联格式化标签由 _extract_inline_text 统一处理。
+    """
+    tag = _local_tag(elem)
+
+    if tag == "sec":
+        # Section: 提取 <title> → ###，其余子元素递归处理
+        for child in elem:
+            child_tag = _local_tag(child)
+            if child_tag == "title":
+                title_text = _extract_inline_text(child)
+                if title_text:
+                    lines.append(f"### {title_text}")
+            else:
+                _pmc_block_to_markdown(child, lines)
+
+    elif tag == "p":
+        text = _extract_inline_text(elem)
+        if text:
+            lines.append(text)
+
+    elif tag == "title":
+        # 独立的 <title>（不在 <sec> 内）
+        text = _extract_inline_text(elem)
+        if text:
+            lines.append(f"### {text}")
+
+    elif tag == "fig":
+        # Figure: 提取 <caption> 文本
+        for child in elem:
+            if _local_tag(child) == "caption":
+                caption_text = _extract_inline_text(child)
+                if caption_text:
+                    lines.append(f"> **Figure**: {caption_text}")
+
+    elif tag == "table-wrap":
+        # 跳过表格（太复杂）
+        pass
+
+    elif tag == "xref":
+        # 块级 xref（少数情况）
+        text = _extract_inline_text(elem)
+        if text:
+            lines.append(text)
+
+    else:
+        # 未知块元素：递归子元素
+        for child in elem:
+            _pmc_block_to_markdown(child, lines)
+
+
+def _extract_inline_text(elem: ET.Element) -> str:
+    """从元素递归提取所有文本，去除内联格式化标签（italic, bold, sup, sub, xref）。
+
+    不处理块级结构。"""
+    parts: list[str] = []
+    if elem.text:
+        parts.append(elem.text)
+    for child in elem:
+        child_tag = _local_tag(child)
+        if child_tag in ("italic", "bold", "sup", "sub", "xref"):
+            # 内联标签：保留内部文本，去除标签本身
+            parts.append(_extract_inline_text(child))
+        else:
+            parts.append(_extract_inline_text(child))
+        if child.tail:
+            parts.append(child.tail)
+    return "".join(parts).strip()

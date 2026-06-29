@@ -11,7 +11,7 @@ import yaml
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from db.database import Database
@@ -42,7 +42,7 @@ async def session_new_form(request: Request, project_id: int):
     # 解析 config 注入前端表单默认值
     import json as _json
     _cfg = yaml.safe_load(default_config) if default_config else {}
-    form_defaults = _json.dumps({
+    form_defaults = {
         "topic": (_cfg.get("research") or {}).get("topic", "").strip(),
         "api_base_url": (_cfg.get("llm") or {}).get("api_base_url", "https://api.deepseek.com"),
         "api_key": (_cfg.get("llm") or {}).get("api_key", ""),
@@ -60,17 +60,15 @@ async def session_new_form(request: Request, project_id: int):
         "max_chars": (_cfg.get("pdf") or {}).get("max_chars", 110000),
         "summary_prompt": (_cfg.get("summary_prompt") or "").strip(),
         "source_arxiv": (_cfg.get("sources") or {}).get("arxiv", True),
-        "source_s2": (_cfg.get("sources") or {}).get("semantic_scholar", False),
-        "source_pwc": (_cfg.get("sources") or {}).get("papers_with_code", False),
         "source_oa": (_cfg.get("sources") or {}).get("openalex", False),
-        "source_dblp": (_cfg.get("sources") or {}).get("dblp", False),
-    })
+        "source_dblp": (_cfg.get("sources") or {}).get("dblp", True),
+        "source_pmc": (_cfg.get("sources") or {}).get("pmc", True),
+    }
 
-    return templates.TemplateResponse("session_new.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "session_new.html", {
         "project": project,
         "default_config": default_config,
-        "form_defaults_json": form_defaults,
+        "form_defaults": form_defaults,
     })
 
 
@@ -80,9 +78,19 @@ async def session_new_form(request: Request, project_id: int):
 async def session_start(
     request: Request,
     project_id: int,
-    mode: str = Form("full"),
-    config_yaml: str = Form(""),
 ):
+    """启动一个新的 pipeline session。
+
+    CSRF 中间件已消费 body 并把 form_data 缓存在 request.state._csrf_form_data
+    （Starlette 0.52.1 _form 缓存不可靠）。必须从 request.state 取，否则
+    用户提交的 mode / config_yaml 会被默默忽略，pipeline 走磁盘默认配置。
+    """
+    form_data = getattr(request.state, "_csrf_form_data", None)
+    if form_data is None:
+        form_data = await request.form()
+    mode = str(form_data.get("mode", "full"))
+    config_yaml = str(form_data.get("config_yaml", ""))
+
     db: Database = request.app.state.db
 
     # 解析配置
@@ -101,6 +109,9 @@ async def session_start(
     session_id = db.create_session(project_id, mode, cfg, "")
     seq = len(db.list_sessions(project_id))
     safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in project_name).strip()
+    resolved = (BASE_DIR / "projects" / safe_name).resolve()
+    if not str(resolved).startswith(str((BASE_DIR / "projects").resolve())):
+        raise ValueError("Invalid project name")
     session_dir = BASE_DIR / "projects" / safe_name / "sessions" / f"{seq:03d}_{ts}"
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "papers").mkdir(exist_ok=True)
@@ -229,12 +240,12 @@ async def session_start(
     session = db.get_session(session_id)
     project = db.get_project(project_id)
     papers = db.get_session_papers(session_id)
+    papers.sort(key=lambda p: (0 if p.get("source_platform") == "local" else 1, -(p.get("relevance_score") or 0)))
     downloaded = sum(1 for p in papers if p["download_status"] == "success")
     analyzed = sum(1 for p in papers if p["summary_status"] in ("success", "cached"))
     failed = sum(1 for p in papers if p["download_status"] == "failed")
 
-    return templates.TemplateResponse("session_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "session_detail.html", {
         "session": session,
         "project": project,
         "papers": papers,
@@ -255,14 +266,15 @@ async def session_detail(request: Request, session_id: int):
 
     project = db.get_project(session["project_id"])
     papers = db.get_session_papers(session_id)
+    # 本地论文置顶，方便找到上传的 PDF
+    papers.sort(key=lambda p: (0 if p.get("source_platform") == "local" else 1, -(p.get("relevance_score") or 0)))
 
     # 统计
     downloaded = sum(1 for p in papers if p["download_status"] == "success")
     analyzed = sum(1 for p in papers if p["summary_status"] in ("success", "cached"))
     failed = sum(1 for p in papers if p["download_status"] == "failed")
 
-    return templates.TemplateResponse("session_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "session_detail.html", {
         "session": session,
         "project": project,
         "papers": papers,
@@ -302,6 +314,26 @@ async def session_progress_json(request: Request, session_id: int):
     }
 
 
+# ── 跨论文结构化抽取对比 ─────────────────────────────────────────
+
+@router.get("/{session_id}/compare-table")
+async def compare_table(request: Request, session_id: int):
+    """Return structured extractions for all papers in this session,
+    plus how many papers have a successful summary but no extraction."""
+    db = request.app.state.db
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    extractions = db.get_session_extractions(session_id)
+    all_papers = db.get_session_papers(session_id)
+    extraction_ids = {e["id"] for e in extractions}
+    missing = sum(
+        1 for p in all_papers
+        if p.get("summary_status") in ("success", "cached") and p["id"] not in extraction_ids
+    )
+    return {"papers": extractions, "missing_count": missing}
+
+
 # ── 报告 ─────────────────────────────────────────────────────────
 
 @router.get("/{session_id}/report", response_class=HTMLResponse)
@@ -319,8 +351,7 @@ async def session_report(request: Request, session_id: int):
     if report_path.exists():
         report_content = report_path.read_text(encoding="utf-8")
 
-    return templates.TemplateResponse("report.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "report.html", {
         "session": session,
         "project": project,
         "report_content": report_content,
@@ -383,8 +414,13 @@ async def session_reanalyze(request: Request, session_id: int):
         if dp["summary_status"] in ("success", "cached"):
             existing = db.get_paper_summaries(dp["id"])
             if existing and existing[0].get("content"):
-                skipped_has_content += 1
-                continue
+                # 若已有摘要但缺少结构化抽取（extraction_json IS NULL），
+                # 放行让 _do_llm_read 的缓存命中分支通过
+                # _backfill_extraction_from_cache 回填 extraction_json。
+                # 否则保持原有跳过逻辑。
+                if dp.get("extraction_json"):
+                    skipped_has_content += 1
+                    continue
         # 找 PDF：先按 arxiv_id 匹配，再扫描目录
         arxiv_stem = dp["arxiv_id"].replace("/", "_")
         pdf_path = None

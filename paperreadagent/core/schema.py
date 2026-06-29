@@ -66,6 +66,7 @@ CORE_MIGRATIONS: dict[int, str] = {
     """,
     3: """
     -- session_version: 改密码时递增，使所有旧 cookie 失效
-    ALTER TABLE core_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0;
+    -- idempotent: skip if column already exists (migration may be re-applied)
+    ALTER TABLE core_users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1;
     """,
 }

@@ -36,3 +36,8 @@ outputs/
 .env
 .DS_Store
 *.log
+data/
+test_mineru_output/
+
+# Rate limiter state (runtime; per-host cooldown timestamps)
+data/rate_limit_state.json

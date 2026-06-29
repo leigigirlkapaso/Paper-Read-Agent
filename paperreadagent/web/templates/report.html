@@ -13,9 +13,10 @@
     <div id="report-html" class="prose max-w-none"></div>
 </div>
 
+<script type="application/json" id="payload-data">{{ report_content | tojson }}</script>
 <script>
     document.getElementById('report-html').innerHTML = DOMPurify.sanitize(marked.parse(
-        {{ report_content | tojson }}
+        JSON.parse(document.getElementById('payload-data').textContent)
     ));
 </script>
 {% else %}

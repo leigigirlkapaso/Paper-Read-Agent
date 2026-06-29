@@ -25,8 +25,9 @@ class SparkStore:
     def __init__(self, data: DataAccess):
         self.data = data
 
-    def dedup(self, spark_content: str, embedding: list[float]) -> tuple[str, int | None]:
-        """返回 (action, merge_target_id)。embedding 为空时跳过向量去重。"""
+    def dedup(self, spark_content: str, embedding: list[float], skip_ids: set[int] | None = None) -> tuple[str, int | None]:
+        """返回 (action, merge_target_id)。embedding 为空时跳过向量去重。
+        skip_ids: 同一批次已保存的火花 ID，不参与去重比较（同 run 内不互斥）。"""
         if not embedding:
             return ("insert", None)
         existing = self.data.get_existing_sparks()
@@ -36,6 +37,8 @@ class SparkStore:
         best_score = 0.0
         best_match = None
         for existing_spark in existing:
+            if skip_ids and existing_spark["id"] in skip_ids:
+                continue
             emb_raw = existing_spark.get("embedding", "")
             if not emb_raw:
                 continue
@@ -85,10 +88,11 @@ class SparkStore:
         generator_score: float = 0.0,
         metadata: dict | None = None,
         depth_content: str = "",
+        skip_dedup_ids: set[int] | None = None,
     ) -> int | None:
         from paperreadagent.core.embedding import pack_embedding
 
-        action, merge_id = self.dedup(content, embedding)
+        action, merge_id = self.dedup(content, embedding, skip_ids=skip_dedup_ids)
         emb_str = pack_embedding(embedding)
 
         if action == "merge" and merge_id is not None:

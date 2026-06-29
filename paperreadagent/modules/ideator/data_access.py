@@ -67,17 +67,18 @@ class DataAccess:
             ).fetchall()
             if not rows:
                 return 0
-            # Dedup guard: clear before populate (aligns with knowledge.py)
-            try:
-                self._spark_lance_table.delete("id >= 0")
-            except Exception:
-                pass
+            # Per-spark upsert: delete by ID before re-adding (atomic at spark level)
+            # BUG-094: avoids total data loss on crash mid-migration
             data = []
             batch = []
             for r in rows:
                 emb = unpack_embedding(r["embedding"])
                 if not emb:
                     continue
+                try:
+                    self._spark_lance_table.delete(f"id = {r['id']}")
+                except Exception:
+                    pass
                 batch.append({"id": r["id"], "vector": [float(x) for x in emb]})
                 if len(batch) >= 500:
                     self._spark_lance_table.add(batch)
@@ -179,9 +180,10 @@ class DataAccess:
                 if note.get("content"):
                     results.append({
                         "id": note.get("id"),
+                        "paper_id": note.get("paper_id", 0),
                         "content": note.get("content", ""),
                         "created_at": note.get("created_at", ""),
-                        "source_module": "literature",
+                        "source_module": "legacy",
                         "content_type": "note",
                     })
         except Exception:
@@ -367,6 +369,169 @@ class DataAccess:
             "SELECT * FROM ideator_sparks WHERE id = ?", (spark_id,),
         ).fetchone()
         return self._core.db.dict_row(row)
+
+    def gather_facts_for_spark(
+        self, spark_id: int, *, max_papers: int = 8,
+    ) -> list[dict]:
+        """Collect 7-field extractions for papers directly linked to this spark.
+
+        Sources:
+          1. ideator_sparks.source_refs (JSON array of {"type":"paper"/"core_note","id":N})
+          2. ideator_cross_links (paper rows on either side of the link)
+          3. core_note -> paper indirection via core.knowledge.get_note(note_id).metadata.paper_id
+
+        Returns: list of dicts {paper_id, title, arxiv_id, relevance_score, extraction}
+        sorted by relevance_score DESC, capped at max_papers. Papers without
+        valid extraction_json are silently dropped.
+        Returns [] if spark has no linked papers or no papers have extractions.
+        """
+        # Per-paper-id score; later writes from cross_links can override defaults
+        paper_scores: dict[int, float] = {}
+
+        def _add_paper(pid: int, score: float) -> None:
+            if pid is None or pid == 0:
+                return
+            cur = paper_scores.get(pid)
+            if cur is None or score > cur:
+                paper_scores[pid] = score
+
+        def _resolve_note_to_paper(nid: int) -> int | None:
+            """Resolve a core_note id → paper_id (via metadata.paper_id).
+            Returns None if note missing or metadata lacks paper_id."""
+            try:
+                note = self._core.knowledge.get_note(nid)
+            except Exception:
+                logger.debug("knowledge.get_note failed for note_id=%s", nid, exc_info=True)
+                return None
+            if not note:
+                return None
+            meta = note.get("metadata") or {}
+            if not isinstance(meta, dict):
+                return None
+            pid = meta.get("paper_id")
+            return pid if isinstance(pid, int) and pid > 0 else None
+
+        # Path A: spark.source_refs
+        spark_row = self._core.db.conn.execute(
+            "SELECT id, source_refs FROM ideator_sparks WHERE id = ?", (spark_id,),
+        ).fetchone()
+        if spark_row is None:
+            return []
+        spark = self._core.db.dict_row(spark_row)
+        raw_refs = spark.get("source_refs")
+        if raw_refs:
+            try:
+                refs = json.loads(raw_refs) if isinstance(raw_refs, str) else raw_refs
+            except (TypeError, ValueError):
+                refs = []
+            if isinstance(refs, list):
+                for ref in refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    rtype = ref.get("type")
+                    rid = ref.get("id")
+                    if rtype == "paper" and isinstance(rid, int):
+                        _add_paper(rid, 0.5)
+                    elif rtype == "core_note" and isinstance(rid, int):
+                        pid = _resolve_note_to_paper(rid)
+                        if pid:
+                            _add_paper(pid, 0.5)
+
+        # Path B: cross_links
+        link_rows = self._core.db.conn.execute(
+            "SELECT source_a_type, source_a_id, source_b_type, source_b_id, "
+            "relevance_score FROM ideator_cross_links WHERE spark_id = ?",
+            (spark_id,),
+        ).fetchall()
+        for raw in link_rows:
+            row = self._core.db.dict_row(raw) if not isinstance(raw, dict) else raw
+            score = float(row.get("relevance_score") or 0.5)
+            for side in ("a", "b"):
+                t = row.get(f"source_{side}_type")
+                i = row.get(f"source_{side}_id")
+                if not isinstance(i, int):
+                    continue
+                if t == "paper":
+                    _add_paper(i, score)
+                elif t == "core_note":
+                    pid = _resolve_note_to_paper(i)
+                    if pid:
+                        _add_paper(pid, score)
+
+        if not paper_scores:
+            return []
+
+        # Load papers + filter to those with valid extraction
+        results: list[dict] = []
+        for pid, score in paper_scores.items():
+            paper = self._legacy.get_paper(pid)
+            if not paper:
+                continue
+            raw_ext = paper.get("extraction_json")
+            if not raw_ext:
+                continue
+            try:
+                ext = json.loads(raw_ext)
+            except Exception:
+                logger.debug("extraction_json parse failed for paper_id=%s", pid)
+                continue
+            if not isinstance(ext, dict):
+                continue
+            results.append({
+                "paper_id": pid,
+                "title": paper.get("title", ""),
+                "arxiv_id": paper.get("arxiv_id"),
+                "relevance_score": score,
+                "extraction": ext,
+            })
+
+        # Sort DESC by score (stable: same score -> ascending paper_id)
+        results.sort(key=lambda r: (-r["relevance_score"], r["paper_id"]))
+        return results[:max_papers]
+
+    # ── Roundtable Outlines (Secretary) ────────────────────────
+
+    def insert_outline(
+        self, *, rt_id: int, round_number: int, outline_markdown: str,
+        facts_block: str = "", model_name: str = "",
+        token_usage: dict | None = None,
+    ) -> int:
+        """Insert a new outline row. Returns the new row id.
+
+        Each call inserts a new row — never updates an existing one.
+        get_latest_outline(rt_id) returns the most recent by round_number.
+        """
+        import json as _json
+        token_usage_json = _json.dumps(token_usage or {}, ensure_ascii=False)
+        cur = self._core.db.conn.execute(
+            """INSERT INTO ideator_roundtable_outlines
+               (rt_id, round_number, outline_markdown, facts_block, model_name, token_usage)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (rt_id, round_number, outline_markdown, facts_block, model_name, token_usage_json),
+        )
+        self._core.db.conn.commit()
+        return cur.lastrowid
+
+    def get_latest_outline(self, rt_id: int) -> str | None:
+        """Get the outline_markdown of the most recent row for this rt_id.
+        Returns None if no outline exists for this rt_id."""
+        row = self._core.db.conn.execute(
+            """SELECT outline_markdown FROM ideator_roundtable_outlines
+               WHERE rt_id = ? ORDER BY round_number DESC, id DESC LIMIT 1""",
+            (rt_id,),
+        ).fetchone()
+        return row["outline_markdown"] if row else None
+
+    def get_outline_history(self, rt_id: int) -> list[dict]:
+        """Get full version history (used by GET /outline route for round_number,
+        and reserved for future time-travel UI)."""
+        rows = self._core.db.conn.execute(
+            """SELECT id, round_number, outline_markdown, created_at
+               FROM ideator_roundtable_outlines WHERE rt_id = ?
+               ORDER BY round_number ASC, id ASC""",
+            (rt_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def list_sparks(
         self, *, status: str | None = None, source_type: str | None = None,
@@ -625,3 +790,74 @@ class DataAccess:
                 (rt_id,),
             ).fetchall()
         return self._core.db.dict_rows(rows)
+
+    # ── 项目书 (project brief) ───────────────────────────
+
+    def insert_project_brief(self, spark_id: int) -> int:
+        cur = self._core.db.conn.execute(
+            "INSERT INTO ideator_project_briefs (spark_id) VALUES (?)", (spark_id,)
+        )
+        self._core.db.conn.commit()
+        return cur.lastrowid
+
+    _BRIEF_COLS = {"status", "brief_json", "context_sources",
+                   "model_name", "token_usage", "error"}
+
+    def update_project_brief(self, brief_id: int, **fields) -> None:
+        allowed = {k: v for k, v in fields.items() if k in self._BRIEF_COLS}
+        if not allowed:
+            return
+        sets = [f"{k}=?" for k in allowed]
+        vals = list(allowed.values()) + [brief_id]
+        self._core.db.conn.execute(
+            f"UPDATE ideator_project_briefs SET {','.join(sets)} WHERE id=?", vals
+        )
+        self._core.db.conn.commit()
+
+    def get_project_brief(self, brief_id: int) -> dict | None:
+        row = self._core.db.conn.execute(
+            "SELECT * FROM ideator_project_briefs WHERE id=?", (brief_id,)
+        ).fetchone()
+        return self._core.db.dict_row(row)
+
+    def list_project_briefs(self, spark_id: int) -> list[dict]:
+        rows = self._core.db.conn.execute(
+            "SELECT * FROM ideator_project_briefs WHERE spark_id=? ORDER BY id DESC",
+            (spark_id,)
+        ).fetchall()
+        return self._core.db.dict_rows(rows)
+
+    def gather_brief_context(self, spark_id: int) -> dict:
+        """Collect everything the project-brief LLM call needs for one spark.
+
+        Returns {spark_content, depth_content, cross_links, team_memory}.
+        Raises ValueError if the spark does not exist.
+        """
+        spark = self.get_spark(spark_id)
+        if spark is None:
+            raise ValueError(f"spark {spark_id} not found")
+
+        links = self._core.db.conn.execute(
+            "SELECT source_a_type, source_a_id, source_b_type, source_b_id, "
+            "link_type, reasoning, relevance_score "
+            "FROM ideator_cross_links WHERE spark_id=? ORDER BY relevance_score DESC",
+            (spark_id,)
+        ).fetchall()
+        cross_links = self._core.db.dict_rows(links)
+
+        team_memory: list[dict] = []
+        rt_id = spark.get("roundtable_id")
+        if rt_id:
+            mem_rows = self._core.db.conn.execute(
+                "SELECT memory_type, content, round_number "
+                "FROM ideator_team_memory WHERE spark_id=? ORDER BY id",
+                (spark_id,)
+            ).fetchall()
+            team_memory = self._core.db.dict_rows(mem_rows)
+
+        return {
+            "spark_content": spark.get("content", ""),
+            "depth_content": spark.get("depth_content", ""),
+            "cross_links": cross_links,
+            "team_memory": team_memory,
+        }

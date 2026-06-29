@@ -209,3 +209,289 @@ def test_create_team_direct_mode():
     assert team.spark_content == "用户的研究想法：探索量子计算在NLP中的应用"
     assert len(team.seats) == 6
     assert "gen" in team.seats
+
+
+# ────────────────────────────────────────────────────────
+# facts_block injection — Task 4
+# ────────────────────────────────────────────────────────
+
+def _make_team_with_facts(facts_block: str) -> AgentTeam:
+    """Build an AgentTeam with mocked llm.load_prompt that echoes kwargs."""
+    seats = [
+        AgentSeat(seat_id="gen", role="generator", quota=2000, tools=[]),
+        AgentSeat(seat_id="rev1", role="reviewer_1", quota=800, tools=[]),
+    ]
+    mock_llm = MagicMock()
+    # Echo back the kwargs so we can inspect what was passed in
+    def fake_load(module, name, **kw):
+        return f"[IDENTITY:{name}][facts_block={kw.get('facts_block', '<absent>')}]"
+    mock_llm.load_prompt.side_effect = fake_load
+
+    return AgentTeam(
+        spark_id=1, spark_content="content", seats=seats, llm=mock_llm,
+        team_memory=MockTeamMemory(), graduation=MockGraduation(),
+        arbiter=MockArbiter(), tool_registry=create_default_registry(),
+        facts_block=facts_block,
+    )
+
+
+def test_init_accepts_facts_block_kwarg_default_empty():
+    """AgentTeam without facts_block kwarg → defaults to ''."""
+    seats = [AgentSeat(seat_id="gen", role="generator", quota=2000, tools=[])]
+    team = AgentTeam(
+        spark_id=1, spark_content="c", seats=seats, llm=MagicMock(),
+        team_memory=MockTeamMemory(), graduation=MockGraduation(),
+        arbiter=MockArbiter(), tool_registry=create_default_registry(),
+    )
+    assert team.facts_block == ""
+
+
+def test_identity_prompt_includes_facts_block_when_provided():
+    """When facts_block='## 📚 ...', _build_agent_system_prompt passes it
+    through load_prompt for every agent."""
+    team = _make_team_with_facts("## 📚 ROUNDTABLE FACTS HERE ##")
+    seat = team.seats["rev1"]
+    sysp = team._build_agent_system_prompt(seat)
+    assert "ROUNDTABLE FACTS HERE" in sysp
+
+
+def test_identity_prompt_omits_facts_block_when_empty():
+    """facts_block='' → not present in rendered identity (fake_load shows it
+    as '<absent>' or empty)."""
+    team = _make_team_with_facts("")
+    seat = team.seats["gen"]
+    sysp = team._build_agent_system_prompt(seat)
+    # The fake renderer shows [facts_block=] — should be empty after =
+    assert "[facts_block=]" in sysp
+    # And the real content marker shouldn't appear
+    assert "ROUNDTABLE FACTS HERE" not in sysp
+
+
+# ────────────────────────────────────────────────────────
+# 3-section soft-check — Task 6
+# ────────────────────────────────────────────────────────
+
+import logging
+
+
+def _team_for_check():
+    seats = [
+        AgentSeat(seat_id="rev1", role="reviewer_1", quota=800, tools=[]),
+        AgentSeat(seat_id="gen", role="generator", quota=2000, tools=[]),
+        AgentSeat(seat_id="arb1", role="arbiter_1", quota=500, tools=[]),
+    ]
+    return AgentTeam(
+        spark_id=1, spark_content="c", seats=seats, llm=MagicMock(),
+        team_memory=MockTeamMemory(), graduation=MockGraduation(),
+        arbiter=MockArbiter(), tool_registry=create_default_registry(),
+    )
+
+
+def test_three_section_check_logs_warning_on_violation(caplog):
+    team = _team_for_check()
+    bad = "this idea is interesting but I think you should reconsider"
+    with caplog.at_level(logging.WARNING,
+                         logger="paperreadagent.modules.ideator.agent_team"):
+        team._check_three_section_format(bad, "rev1")
+    assert any("3 段式" in r.message or "rev1" in r.message for r in caplog.records)
+    assert len(caplog.records) >= 1
+
+
+def test_three_section_check_silent_on_compliance(caplog):
+    team = _team_for_check()
+    good = "【问题点】饱和\n【事实依据】论文 P1\n【建议修复】加 X"
+    with caplog.at_level(logging.WARNING,
+                         logger="paperreadagent.modules.ideator.agent_team"):
+        team._check_three_section_format(good, "rev2")
+    relevant = [r for r in caplog.records if "3 段式" in r.message]
+    assert relevant == []
+
+
+def test_three_section_check_skipped_for_arb_role(caplog):
+    team = _team_for_check()
+    arb_text = "仲裁意见: 通过."
+    with caplog.at_level(logging.WARNING,
+                         logger="paperreadagent.modules.ideator.agent_team"):
+        team._check_three_section_format(arb_text, "arb1")
+    relevant = [r for r in caplog.records if "3 段式" in r.message]
+    assert relevant == []
+
+
+def test_three_section_check_skipped_for_gen_role(caplog):
+    team = _team_for_check()
+    with caplog.at_level(logging.WARNING,
+                         logger="paperreadagent.modules.ideator.agent_team"):
+        team._check_three_section_format("free-form gen reply", "gen")
+    relevant = [r for r in caplog.records if "3 段式" in r.message]
+    assert relevant == []
+
+
+def test_three_section_check_allows_pass_keyword(caplog):
+    """PASS is the documented escape hatch; don't warn on it."""
+    team = _team_for_check()
+    with caplog.at_level(logging.WARNING,
+                         logger="paperreadagent.modules.ideator.agent_team"):
+        team._check_three_section_format("PASS", "rev1")
+    relevant = [r for r in caplog.records if "3 段式" in r.message]
+    assert relevant == []
+
+
+# ────────────────────────────────────────────────────────
+# End-to-end seam test: AgentTeamManager → facts → AgentTeam
+# ────────────────────────────────────────────────────────
+
+
+def test_create_team_with_spark_id_threads_facts_block_end_to_end():
+    """Integration: spark_id>0 → gather_facts_for_spark → _facts_block render
+    → AgentTeam.facts_block. Verifies the wiring across Tasks 1/2/4/6."""
+    from paperreadagent.modules.ideator.agent_team import AgentTeamManager
+
+    # Mock data_access.gather_facts_for_spark to return a single paper's facts
+    mock_data = MagicMock()
+    mock_data.insert_roundtable = MagicMock(return_value=42)
+    mock_data.gather_facts_for_spark = MagicMock(return_value=[
+        {
+            "paper_id": 1, "title": "Wired Paper", "arxiv_id": "2401.0001",
+            "relevance_score": 0.9,
+            "extraction": {
+                "problem": "X", "methods": ["m"], "datasets": ["d"],
+                "metrics": [], "baselines": [], "limitations": [],
+                "contributions": [],
+            },
+        },
+    ])
+    # Mock data_access._core for _resolve_source_context (called when spark_id>0)
+    mock_data._core = MagicMock()
+    mock_data._core.db.conn = MagicMock()
+    mock_data.get_spark = MagicMock(return_value=None)
+
+    # llm.load_prompt: fake it so _facts_block echoes facts count, and identity
+    # prompts echo the facts_block kwarg, so we can assert end-to-end flow.
+    mock_llm = MagicMock()
+    def fake_load_prompt(module, name, **kw):
+        if name == "_facts_block":
+            facts = kw.get("facts", [])
+            return f"<<FACTS:{len(facts)}>>"
+        # identity prompts: echo facts_block so it appears in the system prompt
+        fb = kw.get("facts_block", "")
+        return f"<<{name}>>{fb}"
+    mock_llm.load_prompt.side_effect = fake_load_prompt
+
+    mgr = AgentTeamManager(
+        llm=mock_llm, data_access=mock_data,
+        tool_registry=create_default_registry(),
+        team_memory=MockTeamMemory(), graduation=MockGraduation(),
+        arbiter=MockArbiter(),
+    )
+    rt_id = mgr.create_team(spark_id=99, spark_content="content")
+    team = mgr.get_team(rt_id)
+
+    # Facts were collected
+    mock_data.gather_facts_for_spark.assert_called_once_with(99, max_papers=8)
+    # Facts were rendered through load_prompt
+    assert team.facts_block == "<<FACTS:1>>"
+    # Facts flow into agent system prompts
+    rev1 = team.seats["rev1"]
+    sysp = team._build_agent_system_prompt(rev1)
+    assert "<<FACTS:1>>" in sysp or "FACTS:1" in sysp
+
+
+def test_create_team_with_spark_id_zero_skips_facts_collection():
+    """Direct-roundtable mode (spark_id=0): facts collection must be skipped."""
+    from paperreadagent.modules.ideator.agent_team import AgentTeamManager
+
+    mock_data = MagicMock()
+    mock_data.insert_roundtable = MagicMock(return_value=7)
+    mock_data.gather_facts_for_spark = MagicMock(return_value=[])
+
+    mock_llm = MagicMock()
+    mock_llm.load_prompt.return_value = "<identity>"
+
+    mgr = AgentTeamManager(
+        llm=mock_llm, data_access=mock_data,
+        tool_registry=create_default_registry(),
+        team_memory=MockTeamMemory(), graduation=MockGraduation(),
+        arbiter=MockArbiter(),
+    )
+    rt_id = mgr.create_team(spark_id=0, spark_content="direct content")
+    team = mgr.get_team(rt_id)
+
+    mock_data.gather_facts_for_spark.assert_not_called()
+    assert team.facts_block == ""
+
+
+def test_create_team_facts_collection_failure_falls_through_to_empty():
+    """If gather_facts_for_spark raises, manager logs warning + facts_block=''.
+    Roundtable must still be created and usable."""
+    from paperreadagent.modules.ideator.agent_team import AgentTeamManager
+
+    mock_data = MagicMock()
+    mock_data.insert_roundtable = MagicMock(return_value=11)
+    mock_data.gather_facts_for_spark = MagicMock(side_effect=RuntimeError("DB exploded"))
+    mock_data._core = MagicMock()
+    mock_data._core.db.conn = MagicMock()
+    mock_data.get_spark = MagicMock(return_value=None)
+
+    mock_llm = MagicMock()
+    mock_llm.load_prompt.return_value = "<identity>"
+
+    mgr = AgentTeamManager(
+        llm=mock_llm, data_access=mock_data,
+        tool_registry=create_default_registry(),
+        team_memory=MockTeamMemory(), graduation=MockGraduation(),
+        arbiter=MockArbiter(),
+    )
+    rt_id = mgr.create_team(spark_id=55, spark_content="x")
+    team = mgr.get_team(rt_id)
+    # Despite the exception, the team was created
+    assert team is not None
+    assert team.facts_block == ""
+
+
+# ────────────────────────────────────────────────────────
+# 3-section soft-check: empty text regression (Minor #3)
+# ────────────────────────────────────────────────────────
+
+
+def test_three_section_check_skips_empty_text(caplog):
+    """Empty LLM response shouldn't trigger spurious 3-段式 warning."""
+    team = _team_for_check()
+    with caplog.at_level(logging.WARNING,
+                         logger="paperreadagent.modules.ideator.agent_team"):
+        team._check_three_section_format("", "rev1")
+        team._check_three_section_format("   \n  ", "rev1")
+    relevant = [r for r in caplog.records if "3 段式" in r.message]
+    assert relevant == []
+
+
+# ────────────────────────────────────────────────────────
+# Manager injects stream_hub + rt_id (Task 4)
+# ────────────────────────────────────────────────────────
+
+
+def test_create_team_injects_stream_hub_and_rt_id():
+    """AgentTeamManager.create_team must pass get_stream_hub() and the
+    issued rt_id to the new AgentTeam."""
+    from paperreadagent.modules.ideator.agent_team import AgentTeamManager
+    from paperreadagent.modules.ideator.stream_hub import get_stream_hub
+
+    mock_data = MagicMock()
+    mock_data.insert_roundtable = MagicMock(return_value=123)
+    mock_data.gather_facts_for_spark = MagicMock(return_value=[])
+    mock_data._core = MagicMock()
+    mock_data._core.db.conn = MagicMock()
+
+    mock_llm = MagicMock()
+    mock_llm.load_prompt.return_value = "<identity>"
+
+    mgr = AgentTeamManager(
+        llm=mock_llm, data_access=mock_data,
+        tool_registry=create_default_registry(),
+        team_memory=MockTeamMemory(), graduation=MockGraduation(),
+        arbiter=MockArbiter(),
+    )
+    rt_id = mgr.create_team(spark_id=99, spark_content="x")
+    team = mgr.get_team(rt_id)
+
+    assert team._rt_id == rt_id == 123
+    assert team._stream_hub is get_stream_hub()

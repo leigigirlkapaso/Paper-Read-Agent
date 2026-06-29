@@ -2,95 +2,309 @@
 {% block title %}项目关系图 — PaperReadAgent{% endblock %}
 
 {% block head %}
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+<style>
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-project { background: #ddd6fe; color: #4c1d95; }
+    .badge-paper { background: #dbeafe; color: #1e3a8a; }
+    .badge-note { background: #d1fae5; color: #064e3b; }
+    .badge-spark { background: #fde68a; color: #78350f; }
+    .btn-primary { padding: 6px 14px; border-radius: 6px; font-size: 13px;
+                   background: #6366f1; color: white; cursor: pointer;
+                   text-decoration: none; display: inline-block; }
+    .btn-primary:hover { background: #4f46e5; }
+</style>
 {% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-bold mb-2">🔗 项目关系图</h1>
-<p class="text-sm text-gray-500 mb-6">节点大小 = 笔记数×2 + 论文数×1　·　连线 = 共享论文数</p>
+<div class="space-y-4">
+    <h1 class="text-2xl font-bold">🔗 项目关系图</h1>
 
-<div class="bg-white rounded-xl shadow-sm border p-4">
-    <svg id="graph-svg" width="100%" height="500"></svg>
-</div>
+    <!-- Toolbar -->
+    <div class="bg-white border rounded-lg p-3 flex items-center gap-4 flex-wrap">
+        <input id="rt-graph-search" type="text" placeholder="🔍 搜索节点..."
+               class="border rounded px-3 py-1 text-sm w-64">
+        <div class="flex items-center gap-2 text-sm">
+            <span class="text-gray-500">层级:</span>
+            <label class="flex items-center gap-1">
+                <input type="checkbox" data-layer="project" checked> 项目
+            </label>
+            <label class="flex items-center gap-1">
+                <input type="checkbox" data-layer="paper" checked> 论文
+            </label>
+            <label class="flex items-center gap-1">
+                <input type="checkbox" data-layer="note"> 笔记
+            </label>
+            <label class="flex items-center gap-1">
+                <input type="checkbox" data-layer="spark"> 火花
+            </label>
+        </div>
+        <label class="text-sm flex items-center gap-1">
+            布局:
+            <select id="rt-graph-layout" class="border rounded px-2 py-1 text-sm">
+                <option value="cose" selected>力导向 (cose)</option>
+                <option value="concentric">同心圆</option>
+                <option value="breadthfirst">层次</option>
+                <option value="circle">环形</option>
+            </select>
+        </label>
+        <button id="rt-graph-reset" class="text-sm text-indigo-600 hover:underline">
+            🔄 重置
+        </button>
+        <span id="rt-graph-status" class="ml-auto text-xs text-gray-500"></span>
+    </div>
 
-{% if not graph_data or graph_data == '{"nodes": [], "edges": []}' %}
-<div class="text-center py-10 text-gray-400">
-    <p>暂无足够的项目数据来生成关系图。</p>
-    <p class="text-sm mt-2">至少需要两个包含论文的项目。</p>
+    <!-- Main area -->
+    <div class="flex gap-4">
+        <div id="cy" class="flex-1 bg-white border rounded-lg" style="height:70vh"></div>
+        <aside id="rt-graph-drawer"
+               class="w-80 bg-white border rounded-lg p-4 hidden overflow-y-auto"
+               style="max-height:70vh">
+            <button onclick="closeDrawer()"
+                    class="float-right text-gray-400 hover:text-gray-600">×</button>
+            <div class="drawer-body"></div>
+        </aside>
+    </div>
+
+    <!-- Legend -->
+    <div class="bg-gray-50 border rounded-lg p-3 text-xs text-gray-600 flex gap-6 flex-wrap">
+        <span><span class="inline-block w-3 h-3 bg-indigo-500 align-middle"></span> 项目</span>
+        <span><span class="inline-block w-3 h-3 bg-blue-500 rounded-full align-middle"></span> 论文</span>
+        <span><span class="inline-block w-3 h-3 bg-blue-500 rounded-full border-2 border-amber-500 align-middle"></span> 跨项目共享论文</span>
+        <span><span class="inline-block w-3 h-3 bg-emerald-500 align-middle"></span> 笔记</span>
+        <span><span class="inline-block w-3 h-3 bg-amber-500 align-middle" style="transform:rotate(45deg)"></span> 火花</span>
+        <span class="text-gray-400 ml-auto">💡 单击 = 详情；双击 = 展开邻居</span>
+    </div>
 </div>
-{% endif %}
+{% endblock %}
 
 {% block scripts %}
 <script>
-const graphData = {{ graph_data | tojson }};
+const API = '/papers/api/graph/data';
+let cy = null;
+let layers = new Set(['project', 'paper']);
+let currentLayout = 'cose';
 
-if (graphData.nodes.length > 0) {
-    const svg = d3.select("#graph-svg"),
-          width = svg.node().getBoundingClientRect().width,
-          height = 500;
+const STYLE = [
+    {
+        selector: 'node',
+        style: {
+            'label': 'data(label)', 'text-valign': 'bottom', 'text-margin-y': 6,
+            'font-size': 11, 'color': '#374151',
+            'text-wrap': 'wrap', 'text-max-width': 100,
+            'overlay-opacity': 0,
+        },
+    },
+    { selector: 'node[type = "project"]', style: {
+        'shape': 'octagon', 'background-color': '#6366f1',
+        'width': 'mapData(size, 0, 100, 32, 64)',
+        'height': 'mapData(size, 0, 100, 32, 64)',
+        'border-width': 2, 'border-color': '#4338ca',
+    }},
+    { selector: 'node[type = "paper"]', style: {
+        'shape': 'ellipse', 'background-color': '#3b82f6',
+        'width': 'mapData(size, 0, 100, 18, 40)',
+        'height': 'mapData(size, 0, 100, 18, 40)',
+        'border-width': 1, 'border-color': '#1e40af',
+    }},
+    { selector: 'node[type = "paper"][shared = "true"]', style: {
+        'border-width': 3, 'border-color': '#f59e0b',
+    }},
+    { selector: 'node[type = "note"]', style: {
+        'shape': 'rectangle', 'background-color': '#10b981',
+        'width': 14, 'height': 14,
+    }},
+    { selector: 'node[type = "spark"]', style: {
+        'shape': 'diamond', 'background-color': '#f59e0b',
+        'width': 'mapData(size, 0, 100, 16, 32)',
+        'height': 'mapData(size, 0, 100, 16, 32)',
+    }},
+    { selector: '.highlighted', style: { 'border-width': 4, 'border-color': '#ef4444' }},
+    { selector: '.faded',       style: { 'opacity': 0.2 }},
+    {
+        selector: 'edge',
+        style: {
+            'curve-style': 'bezier', 'target-arrow-shape': 'triangle',
+            'arrow-scale': 0.8, 'line-color': '#cbd5e1',
+            'target-arrow-color': '#cbd5e1', 'width': 1.5,
+            'overlay-opacity': 0,
+        },
+    },
+    { selector: 'edge[etype = "contains"]', style: {
+        'line-color': '#e5e7eb', 'target-arrow-shape': 'none', 'width': 1,
+    }},
+    { selector: 'edge[etype = "shared"]', style: {
+        'line-color': '#60a5fa', 'target-arrow-shape': 'none', 'width': 2.5,
+    }},
+    { selector: 'edge[etype = "has_note"]', style: {
+        'line-color': '#6ee7b7', 'line-style': 'dashed',
+    }},
+    { selector: 'edge[etype = "cites"]', style: {
+        'line-color': '#fdba74', 'width': 2,
+    }},
+    { selector: 'edge[etype = "cross_link"]', style: {
+        'line-color': '#c4b5fd', 'width': 2,
+    }},
+];
 
-    // 力模拟
-    const simulation = d3.forceSimulation(graphData.nodes)
-        .force("link", d3.forceLink(graphData.edges).id(d => d.id).distance(150))
-        .force("charge", d3.forceManyBody().strength(-400))
-        .force("center", d3.forceCenter(width / 2, height / 2))
-        .force("collide", d3.forceCollide().radius(d => Math.sqrt(d.weight) * 8 + 20));
-
-    // 边
-    const link = svg.append("g")
-        .selectAll("line")
-        .data(graphData.edges)
-        .join("line")
-        .attr("stroke", "#ccc")
-        .attr("stroke-width", d => Math.max(1, d.weight * 2));
-
-    // 边标签
-    const linkLabel = svg.append("g")
-        .selectAll("text")
-        .data(graphData.edges)
-        .join("text")
-        .text(d => d.weight)
-        .attr("font-size", 10)
-        .attr("fill", "#999")
-        .attr("text-anchor", "middle");
-
-    // 节点
-    const node = svg.append("g")
-        .selectAll("g")
-        .data(graphData.nodes)
-        .join("g")
-        .call(d3.drag()
-            .on("start", (event, d) => { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-            .on("drag", (event, d) => { d.fx = event.x; d.fy = event.y; })
-            .on("end", (event, d) => { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }));
-
-    node.append("circle")
-        .attr("r", d => Math.max(12, Math.sqrt(d.weight) * 8))
-        .attr("fill", d => d3.schemeCategory10[d.id % 10])
-        .attr("opacity", 0.8)
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 2);
-
-    node.append("text")
-        .text(d => d.name.length > 8 ? d.name.slice(0, 8) + '...' : d.name)
-        .attr("text-anchor", "middle")
-        .attr("dy", 4)
-        .attr("font-size", 10)
-        .attr("fill", "#fff")
-        .attr("font-weight", "bold");
-
-    // 悬浮提示
-    node.append("title")
-        .text(d => `${d.name}\n论文: ${d.paper_count}  笔记: ${d.note_count}  权重: ${d.weight}`);
-
-    simulation.on("tick", () => {
-        link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-            .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
-        linkLabel.attr("x", d => (d.source.x + d.target.x) / 2)
-                 .attr("y", d => (d.source.y + d.target.y) / 2 - 5);
-        node.attr("transform", d => `translate(${d.x},${d.y})`);
+document.addEventListener('DOMContentLoaded', async () => {
+    cy = cytoscape({
+        container: document.getElementById('cy'),
+        style: STYLE,
+        wheelSensitivity: 0.2,
+        minZoom: 0.1, maxZoom: 3.0,
     });
+    let singleTapTimer = null;
+    const SINGLE_TAP_DELAY = 250; // ms; matches typical OS dblclick threshold
+
+    cy.on('tap', 'node', evt => {
+        const data = evt.target.data();
+        if (singleTapTimer) {
+            clearTimeout(singleTapTimer);
+        }
+        singleTapTimer = setTimeout(() => {
+            singleTapTimer = null;
+            renderDrawer(data);
+        }, SINGLE_TAP_DELAY);
+    });
+    cy.on('dbltap', 'node', evt => {
+        // Cancel pending single-tap so drawer doesn't open
+        if (singleTapTimer) {
+            clearTimeout(singleTapTimer);
+            singleTapTimer = null;
+        }
+        expandNeighborhood(evt.target.data().id);
+    });
+    cy.on('tap', evt => {
+        // Background click (not on a node): close drawer
+        if (evt.target === cy) closeDrawer();
+    });
+    bindToolbar();
+    await reloadGraph();
+});
+
+async function reloadGraph() {
+    const params = new URLSearchParams({
+        layers: [...layers].join(','),
+        limit: '200',
+    });
+    try {
+        const resp = await fetch(`${API}?${params}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        cy.elements().remove();
+        cy.add([
+            ...data.nodes.map(n => ({ data: n })),
+            ...data.edges.map(e => ({ data: e })),
+        ]);
+        cy.layout({ name: currentLayout, animate: true, animationDuration: 500 }).run();
+        document.getElementById('rt-graph-status').textContent =
+            `${data.nodes.length} 节点 · ${data.edges.length} 边${data.truncated ? ' · ⚠️ 已截断' : ''}`;
+    } catch (e) {
+        document.getElementById('rt-graph-status').textContent = `加载失败: ${e.message}`;
+    }
+}
+
+async function expandNeighborhood(nodeId) {
+    const params = new URLSearchParams({
+        center: nodeId, hops: '1',
+        layers: [...layers].join(','),
+    });
+    try {
+        const resp = await fetch(`${API}?${params}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const existingNodeIds = new Set(cy.nodes().map(n => n.id()));
+        const existingEdgeIds = new Set(cy.edges().map(e => e.id()));
+        const newNodes = data.nodes.filter(n => !existingNodeIds.has(n.id));
+        const newEdges = data.edges.filter(e => !existingEdgeIds.has(e.id));
+        cy.add([
+            ...newNodes.map(n => ({ data: n })),
+            ...newEdges.map(e => ({ data: e })),
+        ]);
+        cy.layout({ name: currentLayout, animate: true }).run();
+    } catch (_) { /* ignore */ }
+}
+
+function renderDrawer(node) {
+    const drawer = document.getElementById('rt-graph-drawer');
+    drawer.classList.remove('hidden');
+    drawer.querySelector('.drawer-body').innerHTML = renderNodeDetails(node);
+}
+
+function closeDrawer() {
+    document.getElementById('rt-graph-drawer').classList.add('hidden');
+}
+
+function renderNodeDetails(node) {
+    switch (node.type) {
+        case 'project':
+            return `
+                <div class="badge badge-project">项目</div>
+                <h3 class="font-semibold mt-2">${escapeHtml(node.name)}</h3>
+                <p class="text-sm text-gray-500 mt-1">${node.paper_count} 篇论文 · ${node.note_count} 篇笔记</p>
+                <a href="/projects/${node.db_id}" class="btn-primary mt-3">🚀 跳转到项目</a>
+            `;
+        case 'paper':
+            return `
+                <div class="badge badge-paper">论文</div>
+                <h3 class="font-semibold mt-2">${escapeHtml(node.title)}</h3>
+                <p class="text-xs text-gray-400 mt-1">${escapeHtml(node.arxiv_id || '')}</p>
+                <p class="text-sm mt-2">出现在 <strong>${node.project_count}</strong> 个项目${node.project_count > 1 ? ' ⭐跨项目共享' : ''}</p>
+                <a href="/papers/${node.db_id}" class="btn-primary mt-3">🚀 跳转到论文</a>
+            `;
+        case 'note':
+            return `
+                <div class="badge badge-note">笔记</div>
+                <p class="text-sm mt-2">${escapeHtml(node.preview)}</p>
+                <a href="/papers/${node.paper_id}#note" class="btn-primary mt-3">🚀 查看完整笔记</a>
+            `;
+        case 'spark':
+            return `
+                <div class="badge badge-spark">火花</div>
+                <p class="text-sm mt-2">${escapeHtml(node.content_preview)}</p>
+                <p class="text-xs text-gray-400">quality: ${(node.quality_score ?? 0).toFixed(2)}</p>
+                <a href="/ideator/" class="btn-primary mt-3">🚀 前往火花页</a>
+            `;
+    }
+    return '<p>未知节点类型</p>';
+}
+
+function bindToolbar() {
+    document.querySelectorAll('input[data-layer]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            const layer = cb.dataset.layer;
+            cb.checked ? layers.add(layer) : layers.delete(layer);
+            reloadGraph();
+        });
+    });
+    document.getElementById('rt-graph-search').addEventListener('input', searchNodes);
+    document.getElementById('rt-graph-layout').addEventListener('change', e => {
+        currentLayout = e.target.value;
+        cy.layout({ name: currentLayout, animate: true }).run();
+    });
+    document.getElementById('rt-graph-reset').addEventListener('click', reloadGraph);
+}
+
+function searchNodes(evt) {
+    const q = evt.target.value.toLowerCase().trim();
+    if (!q) {
+        cy.elements().removeClass('faded highlighted');
+        return;
+    }
+    const matched = cy.nodes().filter(n => {
+        const d = n.data();
+        const hay = (d.name || d.title || d.preview || d.content_preview || '').toLowerCase();
+        return hay.includes(q);
+    });
+    cy.elements().addClass('faded');
+    matched.removeClass('faded').addClass('highlighted');
+}
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;',
+    })[c]);
 }
 </script>
-{% endblock %}
 {% endblock %}

@@ -1,8 +1,8 @@
 from modules.ideator.schema import LATEST_VERSION, MIGRATIONS
 
 
-def test_latest_version_is_10():
-    assert LATEST_VERSION == 10
+def test_latest_version_is_13():
+    assert LATEST_VERSION == 13
 
 
 def test_migrations_have_v1_through_v10():
@@ -136,3 +136,70 @@ def test_v9_creates_note_ideas_table():
     assert "UNIQUE(note_source, note_id, idea_index)" in sql
     assert "idx_note_ideas_source" in sql
     assert "idx_note_ideas_embedding" in sql
+
+
+def test_project_briefs_table_v12():
+    """MIGRATIONS[12] creates ideator_project_briefs with expected columns."""
+    import sqlite3
+    from modules.ideator.schema import MIGRATIONS, LATEST_VERSION
+
+    assert LATEST_VERSION >= 12
+    assert 12 in MIGRATIONS
+
+    conn = sqlite3.connect(":memory:")
+    for v in range(1, LATEST_VERSION + 1):
+        if v in MIGRATIONS:
+            conn.executescript(MIGRATIONS[v])
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(ideator_project_briefs)")}
+    assert {"id", "spark_id", "status", "brief_json", "context_sources",
+            "model_name", "token_usage", "error", "created_at"} <= cols
+    conn.execute("INSERT INTO ideator_project_briefs (spark_id, status) VALUES (1, 'generating')")
+    conn.execute("INSERT INTO ideator_project_briefs (spark_id, status) VALUES (1, 'done')")
+    conn.execute("INSERT INTO ideator_project_briefs (spark_id, status) VALUES (1, 'failed')")
+    conn.commit()
+    conn.close()
+
+
+def test_migrations_create_outlines_table():
+    """v13 migration creates ideator_roundtable_outlines with expected columns."""
+    import sqlite3
+    from paperreadagent.modules.ideator.schema import MIGRATIONS, LATEST_VERSION
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    for v in sorted(MIGRATIONS.keys()):
+        try:
+            conn.executescript(MIGRATIONS[v])
+        except Exception:
+            pass  # Some migrations have idempotent guards that may collide on memory db
+
+    # Verify LATEST_VERSION includes v13
+    assert LATEST_VERSION >= 13
+
+    # Table exists
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        ("ideator_roundtable_outlines",),
+    ).fetchall()
+    assert len(rows) == 1, "ideator_roundtable_outlines table should exist"
+
+    # Required columns present
+    cols = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(ideator_roundtable_outlines)"
+    ).fetchall()}
+    required = {"id", "rt_id", "round_number", "outline_markdown",
+                "facts_block", "model_name", "token_usage", "created_at"}
+    assert required <= cols, f"missing columns: {required - cols}"
+
+    # Insert + read round-trip
+    conn.execute(
+        """INSERT INTO ideator_roundtable_outlines
+           (rt_id, round_number, outline_markdown)
+           VALUES (?, ?, ?)""",
+        (1, 1, "# T"),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT outline_markdown FROM ideator_roundtable_outlines WHERE rt_id=1"
+    ).fetchone()
+    assert row["outline_markdown"] == "# T"

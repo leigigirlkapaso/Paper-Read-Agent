@@ -3,7 +3,7 @@ db/schema.py
 数据库 DDL，按版本号管理，支持增量迁移。
 """
 
-LATEST_VERSION = 4
+LATEST_VERSION = 5
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -137,5 +137,9 @@ MIGRATIONS: dict[int, str] = {
     4: """
     -- 论文表增加 doi 列，支持多源 PDF 下载
     ALTER TABLE papers ADD COLUMN doi TEXT DEFAULT '';
+    """,
+    5: """
+    -- 论文表增加 extraction_json 列，存储结构化抽取（7 字段）
+    ALTER TABLE papers ADD COLUMN extraction_json TEXT;
     """,
 }

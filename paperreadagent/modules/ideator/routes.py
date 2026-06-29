@@ -4,14 +4,17 @@ modules/ideator/routes.py
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
 from pathlib import Path
 
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment, FileSystemLoader
+
+from .project_brief import ProjectBriefService
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ async def list_sparks(
                         if paper:
                             source_titles.append(paper.get("title", f"论文#{ref['id']}"))
                     except Exception:
-                        logger.debug("[ideator] paper title lookup failed", exc_info=True)  # paper lookup — non-critical
+                        logger.warning("[ideator] paper title lookup failed", exc_info=True)  # paper lookup — non-critical
                 elif ref.get("type") == "core_note":
                     source_titles.append(f"笔记#{ref['id']}")
         s["source_titles"] = source_titles
@@ -86,6 +89,37 @@ async def deepen_spark(request: Request, spark_id: int):
     if result is None:
         return JSONResponse({"error": "深化失败"}, status_code=500)
     return JSONResponse({"spark_id": spark_id, "depth_content": result})
+
+
+@router.post("/api/sparks/{spark_id}/project-brief")
+async def generate_project_brief(request: Request, spark_id: int):
+    core = request.app.state.core
+    from .data_access import DataAccess
+    data = DataAccess(core)
+    svc = ProjectBriefService(core, data)
+    brief_id = await svc.generate(spark_id)
+    brief = data.get_project_brief(brief_id)
+    return {"brief_id": brief_id, "status": brief["status"] if brief else "failed"}
+
+
+@router.get("/api/sparks/{spark_id}/project-briefs")
+async def list_project_briefs(request: Request, spark_id: int):
+    core = request.app.state.core
+    from .data_access import DataAccess
+    data = DataAccess(core)
+    briefs = data.list_project_briefs(spark_id)
+    return {"spark_id": spark_id, "briefs": briefs}
+
+
+@router.get("/api/project-briefs/{brief_id}")
+async def get_project_brief(request: Request, brief_id: int):
+    core = request.app.state.core
+    from .data_access import DataAccess
+    data = DataAccess(core)
+    brief = data.get_project_brief(brief_id)
+    if brief is None:
+        raise HTTPException(status_code=404, detail="project brief not found")
+    return brief
 
 
 @router.get("/api/sparks/{spark_id}/reviews")
@@ -135,7 +169,7 @@ async def get_spark_detail(request: Request, spark_id: int):
                             "type": "paper",
                         })
                 except Exception:
-                    pass  # paper lookup — non-critical
+                    logger.warning("[ideator] paper title lookup failed in detail view", exc_info=True)  # paper lookup — non-critical
             elif ref.get("type") == "core_note":
                 source_titles.append({
                     "id": ref["id"],
@@ -347,6 +381,100 @@ async def get_roundtable(request: Request, rt_id: int):
     })
 
 
+@router.get("/api/roundtables/{rt_id}/stream")
+async def stream_roundtable(request: Request, rt_id: int):
+    """SSE stream of agent token chunks for roundtable rt_id.
+
+    Page-lifecycle: client opens this on page enter, server keeps it open
+    until client closes (page nav/refresh) or close_rt is called by manager.
+    Emits keepalive SSE comments every 15s to defeat proxy idle timeouts.
+    """
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from . import get_roundtable_manager
+    from .stream_hub import get_stream_hub
+
+    mgr = get_roundtable_manager()
+    if mgr is None:
+        return JSONResponse({"error": "Roundtable manager not initialized"}, status_code=500)
+    if mgr.get_team(rt_id) is None:
+        return JSONResponse({"error": "Roundtable not found"}, status_code=404)
+
+    hub = get_stream_hub()
+
+    async def _event_stream():
+        # Initial marker so the client knows the connection is live
+        yield f"event: connected\ndata: {_json.dumps({'rt_id': rt_id})}\n\n"
+
+        keepalive_interval = 15.0
+        sub = hub.subscribe(rt_id)
+        clean_exit = False
+        try:
+            sub_iter = sub.__aiter__()
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        sub_iter.__anext__(), timeout=keepalive_interval,
+                    )
+                except asyncio.TimeoutError:
+                    # SSE comment line (ignored by EventSource) keeps the conn alive
+                    yield f": keepalive {int(asyncio.get_running_loop().time())}\n\n"
+                    continue
+                except StopAsyncIteration:
+                    clean_exit = True
+                    break
+                except asyncio.CancelledError:
+                    break
+
+                event_type = event.get("type", "message")
+                payload = _json.dumps(event, ensure_ascii=False)
+                yield f"event: {event_type}\ndata: {payload}\n\n"
+
+            if clean_exit:
+                # Signal the client to stop subscribing (roundtable closed).
+                yield f"event: closed\ndata: {_json.dumps({'rt_id': rt_id})}\n\n"
+        finally:
+            # Deterministic cleanup: don't rely on GC finalization
+            sub.close()
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.get("/api/roundtables/{rt_id}/outline")
+async def get_outline(request: Request, rt_id: int):
+    """Get the secretary's most recent outline for this roundtable.
+
+    Used by the frontend on page load / refresh to sync the outline panel
+    independent of SSE event delivery."""
+    core = request.app.state.core
+    from .data_access import DataAccess
+    from . import get_roundtable_manager
+
+    mgr = get_roundtable_manager()
+    if not mgr:
+        return JSONResponse({"error": "Roundtable manager not initialized"}, status_code=500)
+    if mgr.get_team(rt_id) is None:
+        return JSONResponse({"error": "Roundtable not found"}, status_code=404)
+
+    data = DataAccess(core)
+    outline = data.get_latest_outline(rt_id)
+    history = data.get_outline_history(rt_id)
+    round_number = history[-1]["round_number"] if history else 0
+    return JSONResponse({
+        "rt_id": rt_id,
+        "outline": outline or "",
+        "round_number": round_number,
+    })
+
+
 @router.post("/api/roundtables/{rt_id}/ask")
 async def ask_round(request: Request, rt_id: int, body: AskRoundRequest):
     """提问一轮"""
@@ -365,6 +493,9 @@ async def ask_round(request: Request, rt_id: int, body: AskRoundRequest):
         msg["roundtable_id"] = rt_id
         data.insert_roundtable_message(**msg)
     data.update_roundtable(rt_id, round_count=team.round_number)
+
+    await mgr.after_round(rt_id)
+
     return JSONResponse({"round_number": team.round_number, "messages": results})
 
 
@@ -402,13 +533,41 @@ async def close_roundtable(request: Request, rt_id: int):
     from . import get_roundtable_manager
     mgr = get_roundtable_manager()
     team = mgr.get_team(rt_id)
+    # Capture spark_id BEFORE close_team removes the team from registry
+    spark_id = team.spark_id if team else 0
     if team:
         try:
             await team.execute_graduation_cycle(roundtable_id=rt_id)
         except Exception:
             logger.warning("[ideator] graduation failed during close", exc_info=True)
         mgr.close_team(rt_id)
-    return JSONResponse({"roundtable_id": rt_id, "status": "closed"})
+
+    # Auto-generate project brief from the secretary's outline (best-effort).
+    # Skipped for direct-roundtable mode (spark_id=0) since project_briefs are
+    # keyed by spark_id. Any failure is logged and swallowed — does not affect
+    # the close response.
+    brief_id = None
+    if spark_id:
+        try:
+            from .data_access import DataAccess
+            from .project_brief import ProjectBriefService
+            data = DataAccess(core)
+            outline = data.get_latest_outline(rt_id) or ""
+            if outline:
+                service = ProjectBriefService(core, data)
+                brief_id = await service.generate(
+                    spark_id, outline_markdown=outline,
+                )
+        except Exception:
+            logger.warning(
+                "[ideator] auto-generate brief failed for rt=%s", rt_id, exc_info=True,
+            )
+
+    return JSONResponse({
+        "roundtable_id": rt_id,
+        "status": "closed",
+        "brief_id": brief_id,
+    })
 
 
 @router.post("/api/roundtables/{rt_id}/supplement")

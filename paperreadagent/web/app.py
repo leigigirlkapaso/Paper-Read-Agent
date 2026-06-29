@@ -10,6 +10,7 @@ import asyncio
 import importlib
 import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -29,11 +30,40 @@ from fastapi.staticfiles import StaticFiles
 from db.database import Database
 from web.routes import projects, sessions, papers
 from paperreadagent.core import create_core
-from paperreadagent.web.auth import verify_cookie, LoginGuard, COOKIE_NAME, _get_server_secret
+from paperreadagent.web.auth import (
+    verify_cookie, LoginGuard, COOKIE_NAME, _get_server_secret,
+    generate_csrf_token, validate_csrf, CSRF_COOKIE, CSRF_HEADER,
+)
+from web.template_config import templates
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="PaperReadAgent", version="0.3.0")
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        # startup
+        import os, webbrowser
+        app.state.core.scheduler.start()  # 幂等；确保在事件循环中启动
+        # 补跑：后台执行，不阻塞启动
+        async def _catch_up():
+            try:
+                from paperreadagent.modules.thinker.questions import QuestionGenerator
+                from paperreadagent.modules.thinker.resolutions import ResolutionTracker
+                core = app.state.core
+                await QuestionGenerator(core).check_inactivity()
+                await ResolutionTracker(core).check_daily_resolutions()
+            except Exception:
+                logger.warning("[App] 启动时补跑检查失败（LLM 可能不可用），调度器稍后会重试")
+        asyncio.create_task(_catch_up())
+        # 自动打开浏览器（测试/CI 环境跳过）
+        if not os.environ.get("PRA_NO_BROWSER"):
+            webbrowser.open("http://127.0.0.1:8000")
+        yield
+        # shutdown
+        await app.state.core.scheduler.shutdown()
+        app.state.core.db.close()
+        app.state.db.close()
+
+    app = FastAPI(title="PaperReadAgent", version="0.3.0", lifespan=_lifespan)
 
     # ── 数据库实例（应用生命周期内共享）────────────────────────
     db_path = BASE_DIR / "paperreadagent.db"
@@ -56,31 +86,6 @@ def create_app() -> FastAPI:
     )
     app.state.login_guard = LoginGuard()
 
-    @app.on_event("startup")
-    async def _startup():
-        import os, webbrowser
-        app.state.core.scheduler.start()
-        # 补跑：后台执行，不阻塞启动
-        async def _catch_up():
-            try:
-                from paperreadagent.modules.thinker.questions import QuestionGenerator
-                from paperreadagent.modules.thinker.resolutions import ResolutionTracker
-                core = app.state.core
-                await QuestionGenerator(core).check_inactivity()
-                await ResolutionTracker(core).check_daily_resolutions()
-            except Exception:
-                logger.warning("[App] 启动时补跑检查失败（LLM 可能不可用），调度器稍后会重试")
-        asyncio.create_task(_catch_up())
-        # 自动打开浏览器（测试/CI 环境跳过）
-        if not os.environ.get("PRA_NO_BROWSER"):
-            webbrowser.open("http://127.0.0.1:8000")
-
-    @app.on_event("shutdown")
-    async def _shutdown():
-        await app.state.core.scheduler.shutdown()
-        app.state.core.db.close()
-        app.state.db.close()
-
     # ── 核心层前端注入中间件 ──────────────────────────────────
     @app.middleware("http")
     async def _inject_core_context(request: Request, call_next):
@@ -99,7 +104,7 @@ def create_app() -> FastAPI:
         # 白名单放行: /login, /logout, /static/**
         _whitelisted = (
             path == "/login" or path == "/logout" or
-            "/static/" in path
+            path.startswith("/static/")
         )
         request.state.is_authenticated = False
 
@@ -122,11 +127,65 @@ def create_app() -> FastAPI:
 
             request.state.is_authenticated = True
 
-        # 移动端检测
-        ua = request.headers.get("user-agent", "")
-        request.state.is_mobile = any(
-            p in ua for p in ("Android", "iPhone", "iPad", "iPod", "Mobile", "mobile")
-        )
+        # 移动端检测：仅用于服务端优化（如选择模板），实际显示由 CSS media query 控制
+        # desktop-only / mobile-only 类处理显示/隐藏，无需依赖 UA
+        request.state.is_mobile = False  # 不再基于 UA 检测；移动端全由 CSS 控制
+
+        response = await call_next(request)
+        return response
+
+    # ── CSRF 中间件（double-submit cookie）─────────────────────
+    @app.middleware("http")
+    async def _csrf_middleware(request: Request, call_next):
+        path = request.url.path
+
+        # 豁免：安全方法（GET/HEAD/OPTIONS）仅设置 cookie
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            csrf_token = request.cookies.get(CSRF_COOKIE)
+            if not csrf_token:
+                csrf_token = generate_csrf_token()
+            response = await call_next(request)
+            response.set_cookie(
+                CSRF_COOKIE, csrf_token,
+                max_age=86400,  # 24h
+                httponly=False,  # JS 可读（前端可放入 header）
+                samesite="lax",
+                secure=False,
+            )
+            return response
+
+        # 豁免路径：登录登出、静态资源、ideator API（已受 auth cookie 保护）
+        if path in ("/login", "/logout") or path.startswith("/ideator/api/"):
+            return await call_next(request)
+
+        # 校验 POST/PUT/PATCH/DELETE
+        cookie_token = request.cookies.get(CSRF_COOKIE)
+        client_token = None
+
+        content_type = request.headers.get("content-type", "")
+        if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+            try:
+                # max_part_size=50MB：PDF 上传默认限制 1MB，必须调大
+                form_data = await request.form(max_part_size=50 * 1024 * 1024)
+                client_token = form_data.get("_csrf_token")
+                # Starlette 0.52.1 _form 缓存不稳定，手动挂到 request.state 供路由层使用
+                request.state._csrf_form_data = form_data
+            except Exception:
+                pass
+
+        if not client_token:
+            client_token = request.headers.get(CSRF_HEADER)
+
+        if not validate_csrf(request, cookie_token, client_token):
+            from fastapi.responses import HTMLResponse
+            return HTMLResponse(
+                "<html><body style='font-family:sans-serif;max-width:500px;margin:80px auto;text-align:center'>"
+                "<h2 style='color:#e53e3e'>CSRF 验证失败</h2>"
+                "<p>请刷新页面后重试。如果问题持续，请清除浏览器缓存和 Cookie。</p>"
+                "<a href='/' style='color:#4f46e5'>← 返回首页</a>"
+                "</body></html>",
+                status_code=403,
+            )
 
         response = await call_next(request)
         return response
@@ -175,6 +234,25 @@ def create_app() -> FastAPI:
     app.include_router(auth_routes.router, tags=["auth"])
     from web.routes import settings_routes
     app.include_router(settings_routes.router, tags=["settings"])
+
+    # ── 统一错误页面 ─────────────────────────────────────────────
+    @app.exception_handler(404)
+    async def _not_found_handler(request: Request, exc):
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"status_code": 404, "message": "页面不存在"},
+            status_code=404,
+        )
+
+    @app.exception_handler(500)
+    async def _server_error_handler(request: Request, exc):
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"status_code": 500, "message": "服务器内部错误"},
+            status_code=500,
+        )
 
     return app
 

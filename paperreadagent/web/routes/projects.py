@@ -5,7 +5,7 @@ Dashboard + 项目 CRUD 路由。
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
@@ -32,8 +32,7 @@ async def dashboard(request: Request):
             "sessions": sessions,
             "stats": stats,
         })
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {
         "projects": proj_data,
     })
 
@@ -41,13 +40,22 @@ async def dashboard(request: Request):
 # ── 创建项目 ─────────────────────────────────────────────────────
 
 @router.post("/", response_class=HTMLResponse)
-async def create_project(
-    request: Request,
-    name: str = Form(...),
-    description: str = Form(""),
-):
+async def create_project(request: Request):
+    """创建新项目。
+
+    CSRF 中间件已消费 body 并把 form_data 缓存在 request.state._csrf_form_data
+    （Starlette 0.52.1 _form 缓存不可靠，FastAPI 的 Form(...) 在此场景下会拿不到字段）。
+    必须从 request.state 取，回退到再读一次 form 作为兜底。
+    """
+    form_data = getattr(request.state, "_csrf_form_data", None)
+    if form_data is None:
+        form_data = await request.form()
+    name = str(form_data.get("name", "")).strip()
+    description = str(form_data.get("description", "")).strip()
+    if not name:
+        return HTMLResponse("项目名称不能为空", status_code=400)
     db = request.app.state.db
-    db.create_project(name.strip(), description.strip())
+    db.create_project(name, description)
     return RedirectResponse(url="/projects/", status_code=303)
 
 
@@ -61,8 +69,7 @@ async def project_detail(request: Request, project_id: int):
         return HTMLResponse("<h2>Project not found</h2>", status_code=404)
     sessions = db.list_sessions(project_id)
     stats = db.get_project_stats(project_id)
-    return templates.TemplateResponse("project_detail.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "project_detail.html", {
         "project": project,
         "sessions": sessions,
         "stats": stats,

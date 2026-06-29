@@ -73,9 +73,39 @@ Firefox: audio/ogg;codecs=opus → 直接透传
 
 - **`master`**（私有）← → **`public`**（开源, orphan 分支, push to GitHub `main`）
 - 同步方式：cherry-pick，每次确认无 API key 泄露
-- **绝对禁止：** 代码/注释/commit 写真实 key；`config.yaml`/`*.db`/`projects/` 提交到 public
-- config.example.yaml 用 `sk-YOUR_API_KEY_HERE` 占位；`.claude/` 永不提交
-- gitignore 保护：`config.yaml` `*.db` `projects/` `data/` `.venv` `__pycache__/` `.claude/` `outputs/` `*.log`
+
+### 🚫 绝对禁止提交到 GitHub（public 分支）
+
+**以下内容永远不能出现在 public 分支，cherry-pick 前必须逐条检查：**
+
+| 禁止内容 | 原因 | 防护 |
+|----------|------|------|
+| `config.yaml` | 含真实 API key | `.gitignore` |
+| `*.db` / `paperreadagent.db` | 含用户数据、论文、笔记 | `.gitignore` |
+| `projects/` | 含 session 数据、config snapshot（可能含 API key）、论文 PDF、摘要 | `.gitignore` |
+| `data/lancedb/` | LanceDB 向量索引、运行时数据 | `.gitignore` |
+| `.claude/` | Claude Code 内部配置、skill、local settings | `.gitignore` |
+| `.venv/` | Python 虚拟环境 | `.gitignore` |
+| `__pycache__/` `*.pyc` | 编译缓存 | `.gitignore` |
+| `outputs/` | 旧版输出目录 | `.gitignore` |
+| `*.log` | 日志文件 | `.gitignore` |
+| `test_mineru_output/` | MinerU 测试残留 | `.gitignore` |
+| **代码/注释/commit message 中写真实 API key** | `sk-xxx` 泄露即被盗用 | ⚠️ 人工审查 |
+| **`BUG_TRACKER.md`** | 内部缺陷清单，暴露系统漏洞 | ⚠️ 人工审查 |
+| **`IDEATOR_RAG_REDESIGN.md`** | 内部头脑风暴，含项目上下文 | ⚠️ 人工审查 |
+| **`docs/superpowers/`** | 内部开发文档（spec/plan） | ⚠️ 人工审查 |
+| **`.aris/`** | Ideator 管道运行时状态 | ⚠️ 人工审查 |
+
+**每次 cherry-pick 到 public 前必须执行：**
+```bash
+# 检查 diff 中是否有敏感文件
+git diff public..master --stat | grep -E 'config.yaml|\.db|projects/|data/|\.claude/|\.venv/|outputs/|\.log|test_mineru|IDEATOR_RAG|BUG_TRACKER|\.aris/'
+
+# 检查 diff 中是否有 API key
+git diff public..master | grep -iE 'sk-[a-z0-9_-]{20,}'
+```
+
+- config.example.yaml 用 `sk-YOUR_API_KEY_HERE` 占位
 
 ## 认证系统
 
